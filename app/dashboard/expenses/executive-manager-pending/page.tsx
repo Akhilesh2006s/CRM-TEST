@@ -47,15 +47,13 @@ export default function ExecutiveManagerPendingExpensesPage() {
   })
 
   useEffect(() => {
-    // Load employees assigned to this Executive Manager
     ;(async () => {
       try {
-        // Get current user to find their assigned employees
         const currentUser = getCurrentUser()
-        if (currentUser?._id) {
-          const empData = await apiRequest<Employee[]>(`/executive-managers/${currentUser._id}/employees`).catch(() => [])
-          setEmployees(empData || [])
-        }
+        if (currentUser?.role !== 'Executive Manager') return
+
+        const empData = await apiRequest<Employee[]>('/executive-managers/my/executives').catch(() => [])
+        setEmployees(empData || [])
       } catch (error) {
         console.error('Failed to load employees:', error)
       }
@@ -100,11 +98,9 @@ export default function ExecutiveManagerPendingExpensesPage() {
   const handleApprove = async (expenseId: string) => {
     setApproving(expenseId)
     try {
-      await apiRequest(`/expenses/${expenseId}/approve`, {
+      await apiRequest(`/expenses/${expenseId}/executive-approve`, {
         method: 'PUT',
-        body: JSON.stringify({
-          status: 'Executive Manager Approved',
-        }),
+        body: JSON.stringify({}),
       })
       toast.success('Expense approved successfully')
       loadExpenses()
