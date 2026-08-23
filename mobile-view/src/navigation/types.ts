@@ -13,7 +13,8 @@ export type RootStackParamList = {
   LeadClose: { id: string };
   
   // DC Management
-  DCCreate: undefined;
+  DCCreate: { dealId?: string };
+  DCCreateSale: undefined;
   DCClosed: undefined;
   DCSaved: undefined;
   DCPending: undefined;
@@ -74,7 +75,13 @@ export type RootStackParamList = {
   
   // Stock Returns
   ReturnsEmployee: undefined;
+  ReturnsExecutive: undefined;
   ReturnsWarehouse: undefined;
+  ReturnsWarehouseExecutive: undefined;
+  ReturnsWarehouseManager: undefined;
+  StockReturnAdd: { returnId?: string } | undefined;
+  StockReturnWarehouseVerify: { returnId: string };
+  StockReturnWarehouseManagerReview: { returnId: string };
   
   // Payments
   PaymentList: undefined;

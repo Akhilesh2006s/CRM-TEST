@@ -19,6 +19,7 @@ import { useAuth } from '../../context/AuthContext';
 import MessageBanner from '../../components/MessageBanner';
 import ScreenShell from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect } from '../../ui/WebPrimitives';
+import { navigateRoot } from '../../navigation/navigationRef';
 
 const DEAL_PRODUCT_STATUS_ORDER = ['Hot', 'Warm', 'Visit Again', 'Not Met Management', 'Not Interested'] as const;
 const SCHOOL_LEAD_STATUSES = new Set(['Hot', 'Warm', 'Cold']);
@@ -44,13 +45,6 @@ function todayDateString(): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
-}
-
-function combineFollowUpDateTime(dateStr: string, timeStr: string): string {
-  const [h, m] = (timeStr || '10:00').split(':').map((v) => parseInt(v, 10) || 0);
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setHours(h, m, 0, 0);
-  return d.toISOString();
 }
 
 function normalizeProductLineStatus(status?: string): string {
@@ -138,17 +132,77 @@ function isFollowUpLineComplete(p: ProductInterested): boolean {
   return true;
 }
 
-function formatProductsSummary(lead: any): string {
+function uniqueLeadProducts(lead: any): ProductInterested[] {
   const rows = leadProductsToInterested(lead);
-  if (rows.length === 0) return '—';
-  return rows
-    .map((p) => {
-      const parts = [p.product_name, p.status];
-      if (Number(p.strength) > 0) parts.push(`Str ${p.strength}`);
-      if (Number(p.chance) > 0) parts.push(`${p.chance}%`);
-      return parts.join(' · ');
-    })
-    .join(', ');
+  const map = new Map<string, ProductInterested>();
+  for (const row of rows) {
+    const key = (row.product_name || '').trim().toLowerCase();
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, row);
+      continue;
+    }
+    const prevScore = (Number(prev.strength) || 0) + (Number(prev.chance) || 0);
+    const nextScore = (Number(row.strength) || 0) + (Number(row.chance) || 0);
+    if (nextScore >= prevScore) map.set(key, row);
+  }
+  return Array.from(map.values());
+}
+
+/** Statuses that mean the school is already a client / in DC flow — not open follow-up leads. */
+const CONVERTED_OR_CLOSED_STATUSES = new Set([
+  'saved',
+  'completed',
+  'closed',
+  'hold',
+  'dc_requested',
+  'dc_accepted',
+  'dc_approved',
+  'dc_sent_to_senior',
+  'in_transit',
+]);
+
+function isOpenFollowUpLead(lead: any): boolean {
+  const status = String(lead?.status || '').trim().toLowerCase();
+  if (CONVERTED_OR_CLOSED_STATUSES.has(status)) return false;
+  // Only open pipeline leads (not yet converted to clients)
+  return status === 'pending' || status === 'processing' || status === '';
+}
+
+function formatDateOnly(dateString?: string) {
+  if (!dateString) return '—';
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function followUpDateToIso(dateStr: string): string {
+  // Noon local avoids UTC midnight showing as 5:30 AM IST
+  const d = new Date(`${dateStr}T12:00:00`);
+  return d.toISOString();
+}
+
+function isFollowUpDateOverdue(dateString?: string): boolean {
+  if (!dateString) return false;
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return false;
+    const today = new Date();
+    const dayOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    return dayOnly.getTime() < todayOnly.getTime();
+  } catch {
+    return false;
+  }
 }
 
 export default function LeadFollowupScreen({ navigation }: any) {
@@ -164,7 +218,6 @@ export default function LeadFollowupScreen({ navigation }: any) {
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFollowUpDatePicker, setShowFollowUpDatePicker] = useState(false);
-  const [showFollowUpTimePicker, setShowFollowUpTimePicker] = useState(false);
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [historyLead, setHistoryLead] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -173,7 +226,6 @@ export default function LeadFollowupScreen({ navigation }: any) {
   const [productNames, setProductNames] = useState<string[]>([]);
   const [updateForm, setUpdateForm] = useState({
     follow_up_date: '',
-    follow_up_time: '10:00',
     remarks: '',
     productsInterested: [] as ProductInterested[],
   });
@@ -200,7 +252,11 @@ export default function LeadFollowupScreen({ navigation }: any) {
       }
       const list = Array.isArray(data) ? data : data?.data || [];
       const names = list
-        .map((p: any) => (typeof p === 'string' ? p : p.name || p.product_name || ''))
+        .filter((p: any) => p.prodStatus !== 0 && p.prodStatus !== false)
+        .map((p: any) =>
+          typeof p === 'string' ? p : p.productName || p.name || p.product_name || '',
+        )
+        .map((n: string) => String(n).trim())
         .filter(Boolean);
       setProductNames([...new Set(names)]);
     } catch {
@@ -225,17 +281,11 @@ export default function LeadFollowupScreen({ navigation }: any) {
       const dcOrders = Array.isArray(dcOrdersResponse) ? dcOrdersResponse : dcOrdersResponse?.data || [];
 
       const activeLeads = (Array.isArray(allData) ? allData : [])
-        .filter((lead: any) => {
-          const status = lead.status?.toLowerCase();
-          return status !== 'saved' && status !== 'completed' && status !== 'closed';
-        })
+        .filter((lead: any) => isOpenFollowUpLead(lead))
         .map((lead: any) => ({ ...lead }));
 
       const leadsFromOrders: any[] = dcOrders
-        .filter((order: any) => {
-          const status = order.status?.toLowerCase();
-          return status !== 'saved' && status !== 'completed' && status !== 'closed';
-        })
+        .filter((order: any) => isOpenFollowUpLead(order))
         .map((order: any) => ({
           _id: order._id,
           school_name: order.school_name,
@@ -247,6 +297,7 @@ export default function LeadFollowupScreen({ navigation }: any) {
           location: order.location,
           strength: order.strength,
           createdAt: order.createdAt,
+          updatedAt: order.updatedAt,
           remarks: order.remarks,
           school_type: order.school_type,
           products: Array.isArray(order.products) ? order.products : undefined,
@@ -255,15 +306,7 @@ export default function LeadFollowupScreen({ navigation }: any) {
         }));
 
       const combinedLeads = [...activeLeads, ...leadsFromOrders];
-      const followUpLeads = combinedLeads.filter((lead: any) => {
-        const status = lead.status?.toLowerCase();
-        if (status === 'saved' || status === 'completed' || status === 'closed') return false;
-        return (
-          status === 'pending' ||
-          status === 'processing' ||
-          (lead.follow_up_date && new Date(lead.follow_up_date) >= new Date())
-        );
-      });
+      const followUpLeads = combinedLeads.filter((lead: any) => isOpenFollowUpLead(lead));
 
       const uniqueLeads = followUpLeads.filter(
         (lead, index, self) => index === self.findIndex((l) => l._id === lead._id)
@@ -299,8 +342,17 @@ export default function LeadFollowupScreen({ navigation }: any) {
       filtered = filtered.filter((l) => l.contact_mobile?.includes(mobileFilter));
     }
     filtered.sort((a, b) => {
-      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      // Most recently updated / followed-up first (then created)
+      const aTime = Math.max(
+        a.updatedAt ? new Date(a.updatedAt).getTime() : 0,
+        a.follow_up_date ? new Date(a.follow_up_date).getTime() : 0,
+        a.createdAt ? new Date(a.createdAt).getTime() : 0,
+      );
+      const bTime = Math.max(
+        b.updatedAt ? new Date(b.updatedAt).getTime() : 0,
+        b.follow_up_date ? new Date(b.follow_up_date).getTime() : 0,
+        b.createdAt ? new Date(b.createdAt).getTime() : 0,
+      );
       return bTime - aTime;
     });
     setLeads(filtered);
@@ -317,7 +369,6 @@ export default function LeadFollowupScreen({ navigation }: any) {
     const prefilled = leadProductsToInterested(lead);
     setUpdateForm({
       follow_up_date: '',
-      follow_up_time: '10:00',
       remarks: '',
       productsInterested: prefilled.length > 0 ? prefilled : [],
     });
@@ -330,7 +381,6 @@ export default function LeadFollowupScreen({ navigation }: any) {
     setModalError(null);
     setUpdateForm({
       follow_up_date: '',
-      follow_up_time: '10:00',
       remarks: '',
       productsInterested: [],
     });
@@ -389,12 +439,8 @@ export default function LeadFollowupScreen({ navigation }: any) {
       setModalError('Follow-up date cannot be in the past');
       return;
     }
-    if (!updateForm.follow_up_time?.trim()) {
-      setModalError('Follow-up time is required');
-      return;
-    }
     if (!updateForm.remarks?.trim()) {
-      setModalError('Remarks is required');
+      setModalError('Remarks are required');
       return;
     }
 
@@ -437,10 +483,7 @@ export default function LeadFollowupScreen({ navigation }: any) {
       const derivedPriority = deriveLeadPriorityFromDealProducts(validProducts);
       const schoolLeadStatus = (selectedLead.lead_status || '').trim();
       const payload: any = {
-        follow_up_date: combineFollowUpDateTime(
-          updateForm.follow_up_date,
-          updateForm.follow_up_time
-        ),
+        follow_up_date: followUpDateToIso(updateForm.follow_up_date),
         remarks: updateForm.remarks.trim(),
         productsInterested: validProducts,
       };
@@ -605,14 +648,14 @@ export default function LeadFollowupScreen({ navigation }: any) {
             <Text style={styles.emptyTitle}>No Follow-up Leads</Text>
             <Text style={styles.emptySubtitle}>
               {allLeads.length === 0
-                ? 'Create leads to see them here.'
+                ? 'Only open leads (not yet converted to clients) appear here.'
                 : 'No leads match the current filters.'}
             </Text>
           </View>
         ) : (
           leads.map((lead) => {
-            const isOverdue =
-              lead.follow_up_date && new Date(lead.follow_up_date) < new Date();
+            const isOverdue = isFollowUpDateOverdue(lead.follow_up_date);
+            const productRows = uniqueLeadProducts(lead);
 
             return (
               <View key={lead._id} style={styles.card}>
@@ -652,17 +695,32 @@ export default function LeadFollowupScreen({ navigation }: any) {
                       isOverdue && styles.dateContainerOverdue,
                     ]}
                   >
-                    <Text style={styles.dateLabel}>Follow-up date & time: </Text>
+                    <Text style={styles.dateLabel}>Follow-up date: </Text>
                     <Text style={[styles.dateValue, isOverdue && styles.dateValueOverdue]}>
-                      {formatDateTime(lead.follow_up_date)}
+                      {formatDateOnly(lead.follow_up_date)}
                     </Text>
                   </View>
 
-                  <View style={styles.productsRow}>
-                    <Text style={styles.productsLabel}>Products interested: </Text>
-                    <Text style={styles.productsValue}>
-                      {formatProductsSummary(lead)}
-                    </Text>
+                  <View style={styles.productsBlock}>
+                    <Text style={styles.productsLabel}>Products interested</Text>
+                    {productRows.length === 0 ? (
+                      <Text style={styles.productsEmpty}>—</Text>
+                    ) : (
+                      productRows.map((p) => (
+                        <View key={p.product_name} style={styles.productLine}>
+                          <Text style={styles.productLineName}>{p.product_name}</Text>
+                          <Text style={styles.productLineMeta}>
+                            {[
+                              p.status,
+                              Number(p.strength) > 0 ? `Strength ${p.strength}` : null,
+                              Number(p.chance) > 0 ? `Chance ${p.chance}%` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </Text>
+                        </View>
+                      ))
+                    )}
                   </View>
 
                   {lead.remarks ? (
@@ -696,15 +754,16 @@ export default function LeadFollowupScreen({ navigation }: any) {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.actionButton, styles.closeButton]}
-                    onPress={() =>
-                      Alert.alert('Close Lead', 'Close this lead?', [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Close',
-                          onPress: () => navigation.navigate('LeadClose', { id: lead._id }),
-                        },
-                      ])
-                    }
+                    onPress={() => {
+                      const id = lead?._id ? String(lead._id) : '';
+                      if (!id) {
+                        setErrorMessage('This lead has no id, so it cannot be closed.');
+                        return;
+                      }
+                      if (!navigateRoot('LeadClose', { id })) {
+                        navigation.navigate('LeadClose', { id });
+                      }
+                    }}
                   >
                     <Text style={styles.actionButtonText}>Close Lead</Text>
                   </TouchableOpacity>
@@ -734,46 +793,58 @@ export default function LeadFollowupScreen({ navigation }: any) {
                   <Text style={styles.modalSchool}>{selectedLead.school_name || 'Unknown'}</Text>
 
                   <Text style={styles.modalLabel}>Next Follow-up Date *</Text>
-                  <TouchableOpacity
-                    style={styles.dateTouchable}
-                    onPress={() => setShowFollowUpDatePicker(true)}
-                  >
-                    <Text
-                      style={[
-                        styles.dateText,
-                        !updateForm.follow_up_date && styles.datePlaceholder,
-                      ]}
-                    >
-                      {updateForm.follow_up_date || 'Tap to pick date'}
-                    </Text>
-                    <Text>📅</Text>
-                  </TouchableOpacity>
-
-                  {showFollowUpDatePicker && (
-                    <Modal visible transparent animationType="slide">
+                  {Platform.OS === 'web' ? (
+                    React.createElement('input', {
+                      type: 'date',
+                      value: updateForm.follow_up_date || '',
+                      min: todayDateString(),
+                      onChange: (e: any) =>
+                        setUpdateForm((f) => ({
+                          ...f,
+                          follow_up_date: e.target.value || '',
+                        })),
+                      style: {
+                        width: '100%',
+                        padding: 14,
+                        borderRadius: 12,
+                        border: '1px solid #E2E8F0',
+                        fontSize: 16,
+                        backgroundColor: '#fff',
+                        color: '#1E293B',
+                        boxSizing: 'border-box',
+                        marginBottom: 12,
+                      },
+                    })
+                  ) : (
+                    <>
                       <TouchableOpacity
-                        style={styles.dateOverlay}
-                        activeOpacity={1}
-                        onPress={() => setShowFollowUpDatePicker(false)}
-                      />
-                      <View style={styles.datePickerBox}>
-                        <View style={styles.datePickerHeader}>
-                          <Text style={styles.datePickerTitle}>Follow-up date</Text>
-                          <TouchableOpacity onPress={() => setShowFollowUpDatePicker(false)}>
-                            <Text style={styles.doneText}>Done</Text>
-                          </TouchableOpacity>
-                        </View>
+                        style={styles.dateTouchable}
+                        onPress={() => setShowFollowUpDatePicker(true)}
+                      >
+                        <Text
+                          style={[
+                            styles.dateText,
+                            !updateForm.follow_up_date && styles.datePlaceholder,
+                          ]}
+                        >
+                          {updateForm.follow_up_date || 'Tap to pick date'}
+                        </Text>
+                        <Text>📅</Text>
+                      </TouchableOpacity>
+
+                      {showFollowUpDatePicker && Platform.OS === 'android' ? (
                         <DateTimePicker
                           value={
                             updateForm.follow_up_date
-                              ? new Date(updateForm.follow_up_date)
+                              ? new Date(updateForm.follow_up_date + 'T12:00:00')
                               : new Date()
                           }
                           mode="date"
                           minimumDate={new Date()}
-                          display={Platform.OS === 'ios' ? 'spinner' : 'calendar'}
-                          onChange={(_, d) => {
-                            if (d) {
+                          display="default"
+                          onChange={(event, d) => {
+                            setShowFollowUpDatePicker(false);
+                            if (event.type === 'set' && d) {
                               const y = d.getFullYear();
                               const m = String(d.getMonth() + 1).padStart(2, '0');
                               const day = String(d.getDate()).padStart(2, '0');
@@ -782,55 +853,49 @@ export default function LeadFollowupScreen({ navigation }: any) {
                                 follow_up_date: `${y}-${m}-${day}`,
                               }));
                             }
-                            if (Platform.OS === 'android') setShowFollowUpDatePicker(false);
                           }}
                         />
-                      </View>
-                    </Modal>
-                  )}
+                      ) : null}
 
-                  <Text style={styles.modalLabel}>Follow-up Time *</Text>
-                  <TouchableOpacity
-                    style={styles.dateTouchable}
-                    onPress={() => setShowFollowUpTimePicker(true)}
-                  >
-                    <Text style={styles.dateText}>
-                      {updateForm.follow_up_time || '10:00'}
-                    </Text>
-                    <Text>🕐</Text>
-                  </TouchableOpacity>
-                  {showFollowUpTimePicker && (
-                    <Modal visible transparent animationType="slide">
-                      <TouchableOpacity
-                        style={styles.dateOverlay}
-                        activeOpacity={1}
-                        onPress={() => setShowFollowUpTimePicker(false)}
-                      />
-                      <View style={styles.datePickerBox}>
-                        <View style={styles.datePickerHeader}>
-                          <Text style={styles.datePickerTitle}>Follow-up time</Text>
-                          <TouchableOpacity onPress={() => setShowFollowUpTimePicker(false)}>
-                            <Text style={styles.doneText}>Done</Text>
-                          </TouchableOpacity>
-                        </View>
-                        <DateTimePicker
-                          value={new Date(`1970-01-01T${updateForm.follow_up_time || '10:00'}:00`)}
-                          mode="time"
-                          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                          onChange={(_, d) => {
-                            if (d) {
-                              const h = String(d.getHours()).padStart(2, '0');
-                              const min = String(d.getMinutes()).padStart(2, '0');
-                              setUpdateForm((f) => ({
-                                ...f,
-                                follow_up_time: `${h}:${min}`,
-                              }));
-                            }
-                            if (Platform.OS === 'android') setShowFollowUpTimePicker(false);
-                          }}
-                        />
-                      </View>
-                    </Modal>
+                      {showFollowUpDatePicker && Platform.OS === 'ios' ? (
+                        <Modal visible transparent animationType="slide">
+                          <TouchableOpacity
+                            style={styles.dateOverlay}
+                            activeOpacity={1}
+                            onPress={() => setShowFollowUpDatePicker(false)}
+                          />
+                          <View style={styles.datePickerBox}>
+                            <View style={styles.datePickerHeader}>
+                              <Text style={styles.datePickerTitle}>Follow-up date</Text>
+                              <TouchableOpacity onPress={() => setShowFollowUpDatePicker(false)}>
+                                <Text style={styles.doneText}>Done</Text>
+                              </TouchableOpacity>
+                            </View>
+                            <DateTimePicker
+                              value={
+                                updateForm.follow_up_date
+                                  ? new Date(updateForm.follow_up_date + 'T12:00:00')
+                                  : new Date()
+                              }
+                              mode="date"
+                              minimumDate={new Date()}
+                              display="spinner"
+                              onChange={(_, d) => {
+                                if (d) {
+                                  const y = d.getFullYear();
+                                  const m = String(d.getMonth() + 1).padStart(2, '0');
+                                  const day = String(d.getDate()).padStart(2, '0');
+                                  setUpdateForm((f) => ({
+                                    ...f,
+                                    follow_up_date: `${y}-${m}-${day}`,
+                                  }));
+                                }
+                              }}
+                            />
+                          </View>
+                        </Modal>
+                      ) : null}
+                    </>
                   )}
 
                   <View style={styles.productsSectionHeader}>
@@ -951,7 +1016,7 @@ export default function LeadFollowupScreen({ navigation }: any) {
                     </Text>
                     {item.follow_up_date ? (
                       <Text style={styles.historyMeta}>
-                        Next follow-up: {formatDateTime(item.follow_up_date)}
+                        Next follow-up: {formatDateOnly(item.follow_up_date)}
                       </Text>
                     ) : null}
                     {item.remarks ? (
@@ -1058,9 +1123,33 @@ const styles = StyleSheet.create({
   dateLabel: { ...typography.body.small, color: colors.textSecondary },
   dateValue: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '500' },
   dateValueOverdue: { color: colors.error, fontWeight: '600' },
-  productsRow: { marginBottom: 8 },
-  productsLabel: { ...typography.body.small, color: colors.textSecondary },
-  productsValue: { ...typography.body.medium, color: colors.textPrimary, marginTop: 4 },
+  productsBlock: { marginBottom: 10 },
+  productsLabel: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+    marginBottom: 6,
+    fontWeight: '600',
+  },
+  productsEmpty: { ...typography.body.medium, color: colors.textSecondary },
+  productLine: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 6,
+    backgroundColor: colors.backgroundLight,
+  },
+  productLineName: {
+    ...typography.body.medium,
+    color: colors.textPrimary,
+    fontWeight: '600',
+  },
+  productLineMeta: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
   remarksContainer: { marginTop: 4 },
   remarksLabel: { ...typography.body.small, color: colors.textSecondary, marginBottom: 4 },
   remarksText: { ...typography.body.medium, color: colors.textPrimary },

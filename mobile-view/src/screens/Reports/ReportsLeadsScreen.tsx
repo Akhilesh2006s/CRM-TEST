@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import { Ionicons } from '@expo/vector-icons';
+import ScreenShell from '../../ui/ScreenShell';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 
@@ -10,34 +10,44 @@ const cards = [
     title: 'Open Leads',
     description: 'View all pending and processing leads',
     route: 'ReportsLeadsOpen',
-    emoji: '📂',
-    colors: ['#3b82f6', '#2563eb'],
+    icon: 'document-text-outline' as const,
+    iconBg: '#3b82f6',
   },
   {
     title: 'Follow-up Leads',
-    description: 'Track saved and follow-up leads',
+    description: 'Open leads in the follow-up pipeline',
     route: 'ReportsLeadsFollowup',
-    emoji: '📞',
-    colors: ['#f97316', '#ea580c'],
+    icon: 'time-outline' as const,
+    iconBg: '#f97316',
   },
   {
     title: 'Closed Leads',
-    description: 'View successfully converted leads',
+    description: 'View all successfully closed leads',
     route: 'ReportsLeadsClosed',
-    emoji: '✅',
-    colors: ['#22c55e', '#16a34a'],
+    icon: 'checkmark-circle-outline' as const,
+    iconBg: '#22c55e',
   },
 ];
 
 export default function ReportsLeadsScreen({ navigation }: any) {
   return (
-    <ScreenShell
-      title="Leads Reports"
-    >
-<ScrollView contentContainerStyle={styles.content}>
+    <ScreenShell title="Leads Reports" subtitle="Select a report type to view detailed lead information">
+      <ScrollView contentContainerStyle={styles.content}>
         {cards.map((card) => (
-          <TouchableOpacity key={card.title} style={styles.card} onPress={() => navigation.navigate(card.route)} activeOpacity={0.8}>
+          <View key={card.title} style={styles.card}>
+            <View style={[styles.iconBox, { backgroundColor: card.iconBg }]}>
+              <Ionicons name={card.icon} size={24} color="#FFFFFF" />
+            </View>
+            <Text style={styles.cardTitle}>{card.title}</Text>
+            <Text style={styles.cardDescription}>{card.description}</Text>
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => navigation.navigate(card.route)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.buttonText}>View Report</Text>
             </TouchableOpacity>
+          </View>
         ))}
       </ScrollView>
     </ScreenShell>
@@ -45,20 +55,49 @@ export default function ReportsLeadsScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  content: { padding: 20, gap: 16 },
-  card: { borderRadius: 20, overflow: 'hidden', elevation: 3, shadowColor: colors.shadowDark, shadowOpacity: 0.2, shadowRadius: 8 },
-  cardGradient: { padding: 20 },
-  cardEmojiContainer: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  cardEmoji: { fontSize: 24 },
-  cardTitle: { ...typography.heading.h3, color: colors.textLight, marginBottom: 6 },
-  cardDescription: { ...typography.body.medium, color: colors.textLight, opacity: 0.85 },
+  content: {
+    padding: 20,
+    gap: 16,
+  },
+  card: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: colors.shadowDark,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  iconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  cardTitle: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    marginBottom: 8,
+  },
+  cardDescription: {
+    ...typography.body.medium,
+    color: colors.textSecondary,
+    marginBottom: 20,
+  },
+  button: {
+    backgroundColor: '#2563eb',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  buttonText: {
+    ...typography.body.medium,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
 });
-
-

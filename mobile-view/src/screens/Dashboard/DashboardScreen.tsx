@@ -38,8 +38,20 @@ type ZonePoint = { zone: string; total: number; hot?: number; warm?: number; col
 const ADMIN_QUICK = [
   { label: 'Add Lead', screen: 'LeadAdd', ion: 'person-add-outline' as const, color: '#16A34A', bg: '#DCFCE7' },
   { label: 'All Leads', screen: 'LeadsList', ion: 'list-outline' as const, color: '#2563EB', bg: '#DBEAFE' },
-  { label: 'Create Sale', screen: 'DCCreate', ion: 'add-circle-outline' as const, color: '#059669', bg: '#D1FAE5' },
+  { label: 'Create Sale', screen: 'DCCreateSale', ion: 'add-circle-outline' as const, color: '#059669', bg: '#D1FAE5' },
   { label: 'Reports', screen: 'ReportsLeads', ion: 'bar-chart-outline' as const, color: '#7C3AED', bg: '#EDE9FE' },
+];
+
+const SUPER_ADMIN_QUICK = ADMIN_QUICK.filter(
+  (q) => q.screen !== 'LeadAdd' && q.screen !== 'LeadsList',
+);
+
+const EM_QUICK = [
+  { label: 'My Dashboard', screen: 'ExecutiveManagerDashboard', ion: 'home-outline' as const, color: '#2563EB', bg: '#DBEAFE' },
+  { label: 'Executives', screen: 'ExecutiveManagerExecutives', ion: 'people-outline' as const, color: '#059669', bg: '#D1FAE5' },
+  { label: 'PO Edit Request', screen: 'ClientsClosedSales', ion: 'document-text-outline' as const, color: '#7C3AED', bg: '#EDE9FE' },
+  { label: 'Pending Expenses', screen: 'ExpenseExecutiveManagerPending', ion: 'time-outline' as const, color: '#D97706', bg: '#FEF3C7' },
+  { label: 'Leave Management', screen: 'ExecutiveManagerLeaves', ion: 'calendar-outline' as const, color: '#0D9488', bg: '#CCFBF1' },
 ];
 
 export default function DashboardScreen({ navigation }: { navigation?: any }) {
@@ -63,7 +75,7 @@ export default function DashboardScreen({ navigation }: { navigation?: any }) {
       flags.isSeniorCoordinator ||
       flags.isExecutiveManager);
 
-  const showLeaveActions = !flags.isAdmin;
+  const showLeaveActions = !flags.isAdmin && !flags.isExecutiveManager;
 
   const load = useCallback(async () => {
     try {
@@ -194,7 +206,7 @@ export default function DashboardScreen({ navigation }: { navigation?: any }) {
             <>
               <Text style={styles.sectionHeading}>Quick actions</Text>
               <View style={styles.quickRow}>
-                {ADMIN_QUICK.map((q) => (
+                {(flags.isSuperAdmin ? SUPER_ADMIN_QUICK : ADMIN_QUICK).map((q) => (
         <TouchableOpacity
                     key={q.screen}
                     style={[styles.quickCard, { backgroundColor: q.bg }]}
@@ -206,6 +218,32 @@ export default function DashboardScreen({ navigation }: { navigation?: any }) {
         </TouchableOpacity>
                 ))}
             </View>
+            </>
+          ) : null}
+
+          {flags.isExecutiveManager ? (
+            <>
+              <Text style={styles.sectionHeading}>Quick actions</Text>
+              <View style={styles.quickRow}>
+                {EM_QUICK.map((q) => (
+                  <TouchableOpacity
+                    key={q.screen}
+                    style={[styles.quickCard, { backgroundColor: q.bg }]}
+                    onPress={() =>
+                      navigateRoot(
+                        q.screen,
+                        q.screen === 'ExecutiveManagerDashboard' || q.screen === 'ExecutiveManagerLeaves'
+                          ? { managerId: user?._id }
+                          : undefined
+                      )
+                    }
+                  >
+                    <PremiumIcon name={q.ion} color={q.color} bg="#FFFFFF" size={20} />
+                    <Text style={styles.quickLabel}>{q.label}</Text>
+                    <Ionicons name="chevron-forward" size={16} color={q.color} style={styles.quickChevron} />
+                  </TouchableOpacity>
+                ))}
+              </View>
             </>
           ) : null}
 
@@ -367,7 +405,7 @@ const styles = StyleSheet.create({
   roleDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.primary, marginRight: 6 },
   roleText: { fontSize: 12, fontWeight: '600', color: colors.primaryDark },
   loadingWrap: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  scroll: { padding: 16, paddingBottom: 32 },
+  scroll: { padding: 16, paddingBottom: 48 },
   block: { marginBottom: 8 },
   leaveRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 },
@@ -385,12 +423,13 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 16,
     padding: 16,
+    paddingRight: 36,
     borderWidth: 1,
     borderColor: colors.borderLight,
   },
-  cardChevron: { position: 'absolute', bottom: 14, right: 14 },
-  leaveTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginTop: 10 },
-  leaveSub: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
+  cardChevron: { position: 'absolute', top: 16, right: 12 },
+  leaveTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginTop: 10, paddingRight: 4 },
+  leaveSub: { fontSize: 12, color: colors.textSecondary, marginTop: 4, paddingRight: 4, lineHeight: 16 },
   sectionHeading: {
     ...typography.heading.h3,
     color: colors.textPrimary,

@@ -3,8 +3,18 @@ import 'react-native-reanimated';
 import { registerRootComponent } from 'expo';
 import App from './App';
 
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately
+try {
+  const errorUtils = global.ErrorUtils;
+  if (errorUtils?.getGlobalHandler && errorUtils?.setGlobalHandler) {
+    const previous = errorUtils.getGlobalHandler();
+    errorUtils.setGlobalHandler((error, isFatal) => {
+      console.error('Uncaught error', { isFatal, message: error?.message, error });
+      if (typeof previous === 'function') {
+        previous(error, false);
+      }
+    });
+  }
+} catch (_) {}
+
 registerRootComponent(App);
 

@@ -21,7 +21,7 @@ import MessageBanner from '../../components/MessageBanner';
 const LEAD_STATUS_OPTIONS = ['Hot', 'Warm', 'Cold'] as const;
 const SCHOOL_TYPE_OPTIONS = [
   { label: 'New', value: 'New' },
-  { label: 'Employee', value: 'Employee' },
+  { label: 'Existing', value: 'Existing' },
 ];
 const TERM_OPTIONS = [
   { label: 'Term 1', value: 'Term 1' },
@@ -42,7 +42,6 @@ type ProductSelection = {
   term: string;
   status: 'Hot' | 'Warm' | 'Not Interested' | 'Management Not Met' | 'Visit Again';
   strength: number;
-  unit_price: number;
   chance: number;
 };
 
@@ -60,6 +59,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
   const [form, setForm] = useState({
     school_type: 'New',
     school_name: '',
+    school_code: '',
     contact_person: '',
     contact_mobile: '',
     email: '',
@@ -85,7 +85,10 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
   const [submitting, setSubmitting] = useState(false);
   const [loadingPincode, setLoadingPincode] = useState(false);
   const [loadingProducts, setLoadingProducts] = useState(true);
-  const [areas, setAreas] = useState<Array<{ name: string; district: string }>>([]);
+  const [areas, setAreas] = useState<
+    Array<{ name: string; district: string; block?: string; branchType?: string }>
+  >([]);
+  const [pincodeError, setPincodeError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showFollowUpDatePicker, setShowFollowUpDatePicker] = useState(false);
@@ -133,7 +136,6 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
             term: 'Term 1',
             status: 'Warm' as const,
             strength: 0,
-            unit_price: 0,
             chance: 0,
           })),
         );
@@ -148,25 +150,33 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
 
   const handlePincodeChange = async (pincode: string) => {
     const cleanPincode = pincode.replace(/\D/g, '').slice(0, 6);
-    setForm((f) => ({ ...f, pincode: cleanPincode, area: cleanPincode.length < 6 ? '' : f.area }));
+    setForm((f) => ({
+      ...f,
+      pincode: cleanPincode,
+      area: cleanPincode.length < 6 ? '' : f.area,
+    }));
+    setPincodeError(null);
 
     if (cleanPincode.length === 6) {
       setLoadingPincode(true);
       try {
         const response = await apiService.get(`/location/get-town?pincode=${cleanPincode}`);
-        if (response.success && response.town) {
+        if (response?.success && response.town) {
           setForm((f) => ({
             ...f,
             city: response.district || '',
             state: response.state || '',
             region: response.region || response.town || '',
+            area: '',
           }));
           if (response.postOffices?.length > 0) {
             setAreas(
               response.postOffices.map((po: any) => ({
-                name: po.Name,
-                district: po.District,
-              })),
+                name: String(po.Name || '').trim(),
+                district: po.District || '',
+                block: po.Block,
+                branchType: po.BranchType,
+              })).filter((a: { name: string }) => a.name),
             );
           } else {
             setAreas([{ name: response.town, district: response.district || '' }]);
@@ -174,10 +184,17 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
         } else {
           setAreas([]);
           setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
+          setPincodeError(response?.message || 'Could not find this pincode. Enter location manually.');
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Pincode lookup failed:', err);
+        const msg =
+          err?.response?.data?.message ||
+          err?.message ||
+          'Pincode lookup failed. Enter location manually.';
         setAreas([]);
+        setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
+        setPincodeError(msg);
       } finally {
         setLoadingPincode(false);
       }
@@ -185,6 +202,23 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
       setAreas([]);
       setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
     }
+  };
+
+  const setFollowUpDate = (ymd: string) => {
+    setForm((f) => ({ ...f, follow_up_date: ymd }));
+  };
+
+  const parseLocalYmd = (s: string) => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + 'T00:00:00');
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? new Date() : d;
+  };
+
+  const toLocalYmd = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   };
 
   const updateProduct = (index: number, patch: Partial<ProductSelection>) => {
@@ -217,6 +251,11 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
+    if (!form.school_code?.trim()) {
+      setErrorMessage('School code is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
     if (!form.contact_person?.trim()) {
       setErrorMessage('Contact person is required');
       return;
@@ -239,6 +278,10 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
     }
     if (!form.area?.trim()) {
       setErrorMessage('Area is required. Enter pincode and select an area.');
+      return;
+    }
+    if (!form.address?.trim()) {
+      setErrorMessage('Address is required');
       return;
     }
     if (!form.average_fee?.trim()) {
@@ -269,10 +312,6 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
     }
 
     for (const p of selectedProducts) {
-      if (!Number.isFinite(p.unit_price) || p.unit_price <= 0) {
-        setErrorMessage(`Enter a Unit Price greater than 0 for "${p.name}".`);
-        return;
-      }
       if ((p.status === 'Hot' || p.status === 'Warm') && (!p.strength || p.strength <= 0)) {
         setErrorMessage(`Enter strength for "${p.name}" when status is ${p.status}.`);
         return;
@@ -291,8 +330,8 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
     try {
       const productsPayload = selectedProducts.map((p) => ({
         product_name: p.name,
-        quantity: p.strength > 0 ? p.strength : 1,
-        unit_price: Number(p.unit_price) || 0,
+        quantity: 1,
+        unit_price: 0,
         term: p.term || 'Term 1',
         status: p.status,
         strength: p.strength || 0,
@@ -301,6 +340,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
 
       const payload = {
         school_name: form.school_name.trim(),
+        school_code: form.school_code.trim(),
         school_type: form.school_type || 'New',
         contact_person: form.contact_person.trim(),
         contact_mobile: form.contact_mobile.trim(),
@@ -308,7 +348,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
         contact_mobile2: form.decision_maker_mobile.trim(),
         email: form.email?.trim() || undefined,
         location: form.location?.trim() || undefined,
-        address: form.address?.trim() || undefined,
+        address: form.address.trim(),
         pincode: form.pincode,
         state: form.state || undefined,
         city: form.city || undefined,
@@ -338,10 +378,12 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
     }
   };
 
-  const areaItems = areas.map((a) => ({
-    label: a.name,
-    value: a.name,
-  }));
+  const areaItems = areas.map((a) => {
+    const display = `${a.name}${a.block ? ` - ${a.block}` : ''}${
+      a.branchType ? ` (${a.branchType})` : ''
+    }`.trim();
+    return { label: display || a.name, value: a.name };
+  });
 
   return (
     <ScreenShell title="Add New School">
@@ -370,6 +412,13 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
           value={form.school_name}
           onChangeText={(text) => setForm((f) => ({ ...f, school_name: text }))}
           placeholder="Enter school name"
+        />
+
+        <FormField
+          label="School code *"
+          value={form.school_code}
+          onChangeText={(text) => setForm((f) => ({ ...f, school_code: text }))}
+          placeholder="Enter school code"
         />
 
         <WebSelect
@@ -430,21 +479,22 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
             <Text style={styles.loadingText}>Loading location details...</Text>
           </View>
         )}
+        {pincodeError && !loadingPincode ? (
+          <Text style={styles.pincodeError}>{pincodeError}</Text>
+        ) : null}
 
         <FormField
           label="State"
           value={form.state}
-          onChangeText={() => {}}
+          onChangeText={(text) => setForm((f) => ({ ...f, state: text }))}
           placeholder="Auto-filled from pincode"
-          editable={false}
         />
 
         <FormField
           label="District"
           value={form.city}
-          onChangeText={() => {}}
+          onChangeText={(text) => setForm((f) => ({ ...f, city: text }))}
           placeholder="Auto-filled from pincode"
-          editable={false}
         />
 
         <FormField
@@ -461,20 +511,18 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
           placeholder="Enter landmark"
         />
 
-        {areas.length > 0 ? (
-          <WebSelect
-            label="Area *"
-            value={form.area}
-            onValueChange={(v) => setForm((f) => ({ ...f, area: v }))}
-            items={areaItems}
-            placeholder="Select exact area"
-          />
-        ) : (
-          <Text style={styles.hint}>Enter pincode to load area options.</Text>
-        )}
+        <WebSelect
+          label="Area *"
+          value={form.area}
+          onValueChange={(v) => setForm((f) => ({ ...f, area: v }))}
+          items={areaItems}
+          placeholder={areas.length === 0 ? 'Enter pincode to load areas' : 'Select exact area'}
+          disabled={areas.length === 0}
+        />
+        <Text style={styles.hint}>Select the exact post office area for this location.</Text>
 
         <View style={styles.textAreaContainer}>
-          <Text style={styles.label}>Address</Text>
+          <Text style={styles.label}>Address *</Text>
           <WebInput
             style={styles.textArea}
             value={form.address}
@@ -567,16 +615,6 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
                         editable={hotOrWarm}
                       />
                       <FormField
-                        label="Unit Price *"
-                        value={product.unit_price ? String(product.unit_price) : ''}
-                        onChangeText={(text) => {
-                          const cleaned = text.replace(/[^\d.]/g, '');
-                          updateProduct(index, { unit_price: Number(cleaned) || 0 });
-                        }}
-                        placeholder="₹"
-                        keyboardType="decimal-pad"
-                      />
-                      <FormField
                         label="Chance %"
                         value={hotOrWarm ? String(product.chance ?? '') : '0'}
                         onChangeText={(text) =>
@@ -595,7 +633,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
             })
           )}
           <Text style={styles.hint}>
-            Select products and set Status, Strength, Unit Price, and Chance % (Unit Price required for every selected product; Strength/Chance required for Hot/Warm). Term is set after the lead is closed.
+            Select products and set Status, Strength, and Chance % (required for Hot/Warm). Term is set after the lead is closed.
           </Text>
         </View>
 
@@ -624,18 +662,48 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
 
         <View style={styles.fieldContainer}>
           <Text style={styles.label}>Follow-up date *</Text>
-          <TouchableOpacity
-            style={styles.dateTouchable}
-            onPress={() => setShowFollowUpDatePicker(true)}
-          >
-            <Text style={[styles.dateText, !form.follow_up_date && styles.datePlaceholder]}>
-              {form.follow_up_date || 'Tap to pick date'}
-            </Text>
-            <Text style={styles.calendarIcon}>📅</Text>
-          </TouchableOpacity>
+          {Platform.OS === 'web' ? (
+            React.createElement('input', {
+              type: 'date',
+              value: form.follow_up_date || '',
+              onChange: (e: any) => setFollowUpDate(e.target.value || ''),
+              style: {
+                width: '100%',
+                padding: 14,
+                borderRadius: 12,
+                border: '1px solid #E2E8F0',
+                fontSize: 16,
+                backgroundColor: '#fff',
+                color: '#1E293B',
+                boxSizing: 'border-box',
+              },
+            })
+          ) : (
+            <TouchableOpacity
+              style={styles.dateTouchable}
+              onPress={() => setShowFollowUpDatePicker(true)}
+            >
+              <Text style={[styles.dateText, !form.follow_up_date && styles.datePlaceholder]}>
+                {form.follow_up_date || 'Tap to pick date'}
+              </Text>
+              <Text style={styles.calendarIcon}>📅</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
-        {showFollowUpDatePicker && (
+        {Platform.OS !== 'web' && showFollowUpDatePicker && Platform.OS === 'android' && (
+          <DateTimePicker
+            value={parseLocalYmd(form.follow_up_date)}
+            mode="date"
+            display="default"
+            onChange={(event, d) => {
+              setShowFollowUpDatePicker(false);
+              if (event.type === 'set' && d) setFollowUpDate(toLocalYmd(d));
+            }}
+          />
+        )}
+
+        {Platform.OS === 'ios' && showFollowUpDatePicker && (
           <Modal visible transparent animationType="slide">
             <TouchableOpacity
               style={styles.dateOverlay}
@@ -650,17 +718,11 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
                 </TouchableOpacity>
               </View>
               <DateTimePicker
-                value={form.follow_up_date ? new Date(form.follow_up_date) : new Date()}
+                value={parseLocalYmd(form.follow_up_date)}
                 mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'calendar'}
+                display="spinner"
                 onChange={(_, d) => {
-                  if (d) {
-                    setForm((f) => ({
-                      ...f,
-                      follow_up_date: d.toISOString().split('T')[0],
-                    }));
-                  }
-                  if (Platform.OS === 'android') setShowFollowUpDatePicker(false);
+                  if (d) setFollowUpDate(toLocalYmd(d));
                 }}
               />
             </View>
@@ -751,6 +813,12 @@ const styles = StyleSheet.create({
     ...typography.body.small,
     color: colors.textSecondary,
     marginBottom: 12,
+  },
+  pincodeError: {
+    ...typography.body.small,
+    color: colors.error || '#DC2626',
+    marginBottom: 12,
+    marginTop: -4,
   },
   section: { marginBottom: 20 },
   sectionTitle: {

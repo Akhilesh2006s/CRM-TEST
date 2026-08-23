@@ -1,11 +1,12 @@
 import 'react-native-gesture-handler';
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { rootNavigationRef } from './src/navigation/navigationRef';
 import MainTabs from './src/navigation/MainTabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet, Text, Alert, TouchableOpacity } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import LoginScreen from './src/screens/Auth/LoginScreen';
 import FirstTimeAttendanceScreen from './src/screens/Attendance/FirstTimeAttendanceScreen';
 import DashboardScreen from './src/screens/Dashboard/DashboardScreen';
@@ -31,6 +32,7 @@ import LeadFollowupScreen from './src/screens/Leads/LeadFollowupScreen';
 import LeadEditScreen from './src/screens/Leads/LeadEditScreen';
 import LeadCloseScreen from './src/screens/Leads/LeadCloseScreen';
 import DCCreateScreen from './src/screens/DC/DCCreateScreen';
+import DCCreateSaleScreen from './src/screens/DC/DCCreateSaleScreen';
 import DCSavedScreen from './src/screens/DC/DCSavedScreen';
 import DCPendingScreen from './src/screens/DC/DCPendingScreen';
 import DCPendingOpenScreen from './src/screens/DC/DCPendingOpenScreen';
@@ -142,54 +144,56 @@ import SettingsUploadScreen from './src/screens/Settings/SettingsUploadScreen';
 import SettingsSMSScreen from './src/screens/Settings/SettingsSMSScreen';
 import SettingsBackupScreen from './src/screens/Settings/SettingsBackupScreen';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
-import { useEffect, useCallback } from 'react';
+import { Component } from 'react';
 
 const Stack = createNativeStackNavigator();
 
-function AppNavigator() {
-  const { user, loading, logout } = useAuth();
-  const navigationRef = rootNavigationRef;
+class ErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
 
-  // Debug logging
-  console.log('AppNavigator - user:', user?.email || 'null', 'loading:', loading);
-
-  const handleLogout = useCallback(() => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-          if (navigationRef.isReady()) {
-            navigationRef.reset({ index: 0, routes: [{ name: 'Login' }] });
-          }
-        },
-      },
-    ]);
-  }, [logout]);
-
-  // Navigate based on auth state
-  useEffect(() => {
-    if (!loading && navigationRef.isReady()) {
-      if (!user) {
-        navigationRef.reset({ index: 0, routes: [{ name: 'Login' }] });
-      } else {
-        navigationRef.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
-      }
-    }
-  }, [user, loading, navigationRef]);
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={{ marginTop: 16, color: '#666' }}>Loading...</Text>
-      </View>
-    );
+  static getDerivedStateFromError(error: Error) {
+    return { error };
   }
 
-  // Default screen options with logout button for all authenticated screens
+  componentDidCatch(error: Error) {
+    console.error('App crash:', error);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <View style={styles.loadingContainer}>
+          <Text style={{ color: '#171717', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>
+            Something went wrong
+          </Text>
+          <Text style={{ color: '#666', textAlign: 'center', paddingHorizontal: 24 }}>
+            {this.state.error.message}
+          </Text>
+          <TouchableOpacity
+            style={[styles.logoutHeaderButton, { backgroundColor: '#2563EB', marginTop: 16 }]}
+            onPress={() => this.setState({ error: null })}
+          >
+            <Text style={styles.logoutHeaderText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AuthStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Login" component={LoginScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function AuthenticatedStack() {
   const defaultScreenOptions = {
     headerShown: false,
     headerStyle: {
@@ -200,19 +204,11 @@ function AppNavigator() {
       fontWeight: '600' as const,
       fontSize: 17,
     },
+    animation: 'slide_from_right' as const,
   };
 
   return (
-    <NavigationContainer ref={navigationRef}>
-      <StatusBar style="auto" />
-      <Stack.Navigator 
-        screenOptions={defaultScreenOptions}
-      >
-        <Stack.Screen 
-          name="Login" 
-          component={LoginScreen} 
-          options={{ headerShown: false }}
-        />
+    <Stack.Navigator screenOptions={defaultScreenOptions} initialRouteName="MainTabs">
         <Stack.Screen 
           name="FirstTimeAttendance" 
           component={FirstTimeAttendanceScreen} 
@@ -221,7 +217,7 @@ function AppNavigator() {
         <Stack.Screen
           name="MainTabs"
           component={MainTabs}
-          options={{ headerShown: false }}
+          options={{ headerShown: false, gestureEnabled: false }}
         />
         {/* Alias for deep links / older resets */}
         <Stack.Screen
@@ -251,6 +247,7 @@ function AppNavigator() {
         <Stack.Screen name="DCClosed" component={DCClosedScreen} />
         <Stack.Screen name="DCCompleted" component={DCCompletedScreen} />
         <Stack.Screen name="DCCreate" component={DCCreateScreen} />
+        <Stack.Screen name="DCCreateSale" component={DCCreateSaleScreen} />
         <Stack.Screen name="DCSaved" component={DCSavedScreen} />
         <Stack.Screen name="DCPending" component={DCPendingScreen} />
         <Stack.Screen name="DCPendingOpen" component={DCPendingOpenScreen} />
@@ -384,13 +381,13 @@ function AppNavigator() {
         
         {/* Returns */}
         <Stack.Screen name="ReturnsEmployee" component={ReturnsEmployeeScreen} />
+        <Stack.Screen name="ReturnsExecutive" component={ReturnsEmployeeScreen} />
         <Stack.Screen name="StockReturnAdd" component={StockReturnAddScreen} />
         <Stack.Screen name="ReturnsWarehouse" component={ReturnsWarehouseScreen} />
         <Stack.Screen name="ReturnsWarehouseExecutive" component={ReturnsWarehouseExecutiveScreen} />
         <Stack.Screen name="StockReturnWarehouseVerify" component={StockReturnWarehouseVerifyScreen} />
         <Stack.Screen name="ReturnsWarehouseManager" component={ReturnsWarehouseManagerScreen} />
-        <Stack.Screen name="StockReturnWarehouseManagerReview" component={StockReturnWarehouseManagerReviewScreen} />
-        
+        <Stack.Screen name="StockReturnWarehouseManagerReview" component={StockReturnWarehouseManagerReviewScreen} />        
         {/* Clients (Executive Manager PO Edit) */}
         <Stack.Screen name="ClientsClosedSales" component={ClientsClosedSalesScreen} />
         
@@ -409,16 +406,40 @@ function AppNavigator() {
 
         {/* Leaves */}
         <Stack.Screen name="LeaveList" component={LeaveListScreen} />
-      </Stack.Navigator>
-    </NavigationContainer>
+    </Stack.Navigator>
+  );
+}
+
+function AppNavigator() {
+  const { user, loading } = useAuth();
+
+  return (
+    <View style={{ flex: 1 }}>
+      <NavigationContainer ref={rootNavigationRef}>
+        <StatusBar style="dark" />
+        {user ? <AuthenticatedStack /> : <AuthStack />}
+      </NavigationContainer>
+      {loading && !user ? (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFillObject, styles.loadingOverlay]}
+        >
+          <ActivityIndicator size="large" color="#007AFF" />
+        </View>
+      ) : null}
+    </View>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppNavigator />
-    </AuthProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <AppNavigator />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -428,6 +449,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
+  },
+  loadingOverlay: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245,245,245,0.72)',
   },
   logoutHeaderButton: {
     marginRight: 16,

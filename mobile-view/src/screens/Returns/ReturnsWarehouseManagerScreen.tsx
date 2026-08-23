@@ -15,6 +15,8 @@ import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
+import { getRoleFlags } from '../../utils/roles';
 
 function getWarehouseExecName(r: any) {
   const v = r.verifiedBy;
@@ -47,6 +49,8 @@ function getFlags(products: any[]) {
 }
 
 export default function ReturnsWarehouseManagerScreen({ navigation }: any) {
+  const { user } = useAuth();
+  const { isAdmin } = getRoleFlags(user);
   const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -54,7 +58,11 @@ export default function ReturnsWarehouseManagerScreen({ navigation }: any) {
   const loadReturns = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await apiService.get('/stock-returns/warehouse-manager/queue');
+      // Super Admin/Admin: full list. Warehouse Manager: approval queue only.
+      const endpoint = isAdmin
+        ? '/stock-returns/warehouse-manager/list'
+        : '/stock-returns/warehouse-manager/queue';
+      const data = await apiService.get(endpoint);
       setReturns(Array.isArray(data) ? data : []);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load returns');
@@ -63,7 +71,7 @@ export default function ReturnsWarehouseManagerScreen({ navigation }: any) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useFocusEffect(
     useCallback(() => {
@@ -78,7 +86,8 @@ export default function ReturnsWarehouseManagerScreen({ navigation }: any) {
 
   return (
     <ScreenShell
-      title="Return queue"
+      title="Warehouse Manager Returns"
+      subtitle="Approve or reject verified returns"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
@@ -91,7 +100,11 @@ export default function ReturnsWarehouseManagerScreen({ navigation }: any) {
         {returns.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>📋</Text>
-            <Text style={styles.emptyText}>No returns awaiting approval (Received / Pending Approval)</Text>
+            <Text style={styles.emptyText}>
+              {isAdmin
+                ? 'No executive stock returns found'
+                : 'No returns awaiting approval (Received / Pending Approval)'}
+            </Text>
           </View>
         ) : (
           returns.map((r) => {

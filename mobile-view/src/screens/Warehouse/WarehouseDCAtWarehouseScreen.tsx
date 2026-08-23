@@ -138,7 +138,9 @@ export default function WarehouseDCAtWarehouseScreen({ navigation }: any) {
                 </View>
                 
                 <View style={styles.cardFooter}>
-                  <Text style={styles.viewDetailsText}>View Details →</Text>
+                  <View style={styles.updateButton}>
+                    <Text style={styles.updateButtonText}>Update & Submit</Text>
+                  </View>
                 </View>
               </TouchableOpacity>
             ))}
@@ -357,12 +359,21 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderLight,
     marginTop: 4,
   },
-  viewDetailsText: {
-    ...typography.label.medium,
-    color: colors.primary,
+  updateButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  updateButtonText: {
+    color: colors.textLight,
     fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
     textAlign: 'center',
-    letterSpacing: 0.3,
   },
 });
 

@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { colors } from '../../theme/colors';
@@ -17,6 +16,19 @@ import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { isTransportComplete, TRANSPORT_REQUIRED_MESSAGE } from '../../utils/dcTransport';
+import { showAlert, showConfirm } from '../../utils/showAlert';
+import { navigateRoot } from '../../navigation/navigationRef';
+import { isLevelOne, isLevelTwo } from '../../utils/levelTermRouting';
+
+function resolveRowTerm(p: { term?: string; level?: string }, hasLevel1: boolean): 'Term 1' | 'Term 2' {
+  const t = String(p?.term ?? '').trim();
+  if (t === 'Term 2') return 'Term 2';
+  const collapsed = t.toLowerCase().replace(/[\s_-]+/g, '');
+  if (collapsed === 'term2' || collapsed === 't2') return 'Term 2';
+  if (isLevelTwo(p.level) && hasLevel1) return 'Term 2';
+  return 'Term 1';
+}
 
 function ReadOnlyField({ label, value }: { label: string; value: string }) {
   return (
@@ -29,6 +41,10 @@ function ReadOnlyField({ label, value }: { label: string; value: string }) {
 
 export default function DCRequestSummaryScreen({ navigation, route }: any) {
   const orderId = route?.params?.orderId as string | undefined;
+  const client = route?.params?.client as any;
+  const dcId =
+    (route?.params?.dcId as string | undefined) ||
+    (client?._id && !client?._isConvertedLead ? String(client._id) : undefined);
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -37,43 +53,16 @@ export default function DCRequestSummaryScreen({ navigation, route }: any) {
     if (orderId) loadOrder();
   }, [orderId]);
 
-  const resolveTerm = (p: any): string => {
-    const t = String(p?.term ?? '').trim();
-    if (t === 'Term 2') return 'Term 2';
-    if (t === 'Both' || t === 'Term 1' || !t) return 'Term 1';
-    const collapsed = t.toLowerCase().replace(/[\s_-]+/g, '');
-    if (collapsed === 'term2' || collapsed === 't2') return 'Term 2';
-    return 'Term 1';
-  };
-
   const loadOrder = async () => {
     if (!orderId) return;
     try {
       setLoading(true);
       const data = await apiService.get(`/dc-orders/${orderId}`);
-      let mergedProducts = Array.isArray(data.products) ? [...data.products] : [];
-      try {
-        const related = await apiService.get(`/dc?dcOrderId=${encodeURIComponent(orderId)}`);
-        const list = Array.isArray(related) ? related : [];
-        list.forEach((dc: any) => {
-          if (Array.isArray(dc.productDetails)) {
-            dc.productDetails.forEach((line: any) => {
-              mergedProducts.push({
-                product_name: line.product || line.productName,
-                quantity: line.quantity ?? line.strength,
-                unit_price: line.price ?? line.unit_price,
-                term: line.term,
-                level: line.level,
-              });
-            });
-          }
-        });
-      } catch {
-        /* optional */
-      }
-      setOrder({ ...data, products: mergedProducts });
+      // Request DC (My Clients) shows PO lines only — Term 2 is managed in Term-Wise DC.
+      const products = Array.isArray(data.products) ? data.products : [];
+      setOrder({ ...data, products });
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to load order');
+      showAlert('Error', e?.message || 'Failed to load order');
       navigation.goBack();
     } finally {
       setLoading(false);
@@ -82,14 +71,90 @@ export default function DCRequestSummaryScreen({ navigation, route }: any) {
 
   const handleRequestDC = async () => {
     if (!orderId) return;
+    if (order?.status === 'dc_requested') {
+      showAlert('Already requested', 'This client is already in Closed Sales.');
+      return;
+    }
+    if (!isTransportComplete(order)) {
+      showConfirm(
+        'Transport required',
+        TRANSPORT_REQUIRED_MESSAGE,
+        () => {
+          if (!navigateRoot('ClientEditPO', { orderId })) {
+            navigation.navigate('ClientEditPO', { orderId });
+          }
+        },
+        'Open Edit PO',
+      );
+      return;
+    }
     setSubmitting(true);
     try {
-      await apiService.put(`/dc-orders/${orderId}`, { status: 'dc_requested' });
-      Alert.alert('Done', 'DC requested. It will appear in Closed Sales and follow the normal flow.', [
-        { text: 'OK', onPress: () => navigation.navigate('DCClient') },
-      ]);
+      const allProducts = order?.products || [];
+      const hasL1 = allProducts.some((x: any) => isLevelOne(x?.level));
+      const term1Lines = allProducts.filter((p: any) => resolveRowTerm(p, hasL1) === 'Term 1');
+      const productsForOrder = term1Lines.map((p: any) => ({
+        product_name: p.product_name || p.product || 'Unknown',
+        quantity: Number(p.quantity) || 0,
+        unit_price: Number(p.unit_price) || 0,
+        term: p.term || 'Term 1',
+        level: p.level,
+        class: p.class,
+        specs: p.specs,
+        subject: p.subject,
+        productCategory: p.productCategory,
+        category: p.category,
+        strength: Number(p.strength ?? p.quantity) || 0,
+      }));
+      const productDetails = productsForOrder.map((p) => ({
+        product: p.product_name,
+        quantity: p.quantity,
+        strength: p.strength,
+        price: p.unit_price,
+        term: p.term || 'Term 1',
+        level: p.level,
+        class: p.class,
+        specs: p.specs,
+        subject: p.subject,
+        productCategory: p.productCategory,
+      }));
+      const requestedQuantity = productsForOrder.reduce((s, p) => s + (Number(p.quantity) || 0), 0);
+
+      await apiService.put(`/dc-orders/${orderId}`, {
+        status: 'dc_requested',
+        products: productsForOrder,
+        dcRequestData: {
+          productDetails,
+          requestedQuantity,
+          poPhotoUrl: order?.pod_proof_url || client?.poPhotoUrl || undefined,
+          requestedAt: new Date().toISOString(),
+        },
+      });
+
+      if (dcId) {
+        try {
+          await apiService.put(`/dc/${dcId}`, {
+            productDetails,
+            requestedQuantity,
+            status: 'po_submitted',
+          });
+        } catch {
+          /* optional DC sync */
+        }
+      }
+
+      const hasTerm2 = allProducts.some((p: any) => resolveRowTerm(p, hasL1) === 'Term 2');
+      showAlert(
+        'Sent to Closed Sales',
+        hasTerm2
+          ? 'Request sent. Term 1 appears in Super Admin → Closed Sales; Term 2 stays in Term-Wise DC.'
+          : 'Request sent. This client now appears in Super Admin → Closed Sales.',
+      );
+      if (!navigateRoot('DCClient')) {
+        navigation.navigate('DCClient');
+      }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to request DC');
+      showAlert('Error', e?.message || 'Failed to request DC');
     } finally {
       setSubmitting(false);
     }
@@ -106,13 +171,25 @@ export default function DCRequestSummaryScreen({ navigation, route }: any) {
 
   if (!order) return null;
 
+  if (order.status === 'dc_requested') {
+    return (
+      <ScreenShell title={`Request DC${order.school_name ? ` - ${order.school_name}` : ''}`} loading={loading}>
+        <View style={styles.dcFlowBlock}>
+          <Text style={styles.dcFlowBlockMessage}>
+            This client was already sent to Closed Sales. Super Admin can review it under Closed Sales.
+          </Text>
+          <TouchableOpacity style={styles.dcFlowBlockButton} onPress={() => navigation.goBack()}>
+            <Text style={styles.dcFlowBlockButtonText}>Back to My Clients</Text>
+          </TouchableOpacity>
+        </View>
+      </ScreenShell>
+    );
+  }
+
   const products = order.products && Array.isArray(order.products) ? order.products : [];
-  const term1Products = products.filter((p: any) => {
-    const term = resolveTerm(p);
-    return term === 'Term 1' || term === 'Both';
-  });
-  const term2Products = products.filter((p: any) => resolveTerm(p) === 'Term 2');
-  const showSplit = term1Products.length > 0 && term2Products.length > 0;
+  const hasLevel1 = products.some((p: any) => isLevelOne(p?.level));
+  const term1Products = products.filter((p: any) => resolveRowTerm(p, hasLevel1) === 'Term 1');
+  const term2Count = products.filter((p: any) => resolveRowTerm(p, hasLevel1) === 'Term 2').length;
 
   const renderProductTable = (rows: any[], title: string) => (
     <View style={styles.section} key={title}>
@@ -142,7 +219,7 @@ export default function DCRequestSummaryScreen({ navigation, route }: any) {
     </View>
   );
 
-  const totalAmount = products.reduce(
+  const totalAmount = term1Products.reduce(
     (s: number, p: any) => s + (Number(p.quantity) || 0) * (Number(p.unit_price) || 0),
     0
   );
@@ -175,14 +252,13 @@ export default function DCRequestSummaryScreen({ navigation, route }: any) {
           <ReadOnlyField label="PO Document" value={order.pod_proof_url ? 'Attached' : 'Not attached'} />
         </View>
 
-        {showSplit ? (
-          <>
-            {renderProductTable(term1Products, 'Term 1 products')}
-            {renderProductTable(term2Products, 'Term 2 products')}
-          </>
-        ) : (
-          renderProductTable(products, 'Products & quantities')
-        )}
+        {term2Count > 0 ? (
+          <Text style={styles.hint}>
+            {term2Count} Term 2 product{term2Count === 1 ? '' : 's'} managed in Term-Wise DC — not
+            shown here.
+          </Text>
+        ) : null}
+        {renderProductTable(term1Products, 'Products & quantities')}
         <View style={styles.section}>
           <ReadOnlyField label="Total amount" value={String(totalAmount.toFixed(2))} />
         </View>
@@ -222,6 +298,7 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   contentContainer: { padding: 20, paddingBottom: 24 },
   subtitle: { ...typography.body.small, color: colors.textSecondary, marginBottom: 20 },
+  hint: { ...typography.body.small, color: colors.textSecondary, marginBottom: 12, fontStyle: 'italic' },
   section: { marginBottom: 24 },
   sectionTitle: { ...typography.heading.h4, color: colors.textPrimary, marginBottom: 12 },
   field: { marginBottom: 12 },
@@ -269,4 +346,8 @@ const styles = StyleSheet.create({
   },
   requestButtonText: { ...typography.heading.h4, color: colors.textLight, fontWeight: '600' },
   buttonDisabled: { opacity: 0.7 },
+  dcFlowBlock: { flex: 1, justifyContent: 'center', padding: 24, alignItems: 'center' },
+  dcFlowBlockMessage: { ...typography.body.medium, color: colors.textSecondary, textAlign: 'center', marginBottom: 24 },
+  dcFlowBlockButton: { paddingVertical: 14, paddingHorizontal: 24, backgroundColor: colors.primary, borderRadius: 12 },
+  dcFlowBlockButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
 });

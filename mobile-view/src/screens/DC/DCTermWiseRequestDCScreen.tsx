@@ -10,7 +10,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { colors } from '../../theme/colors';
@@ -18,6 +17,8 @@ import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { isTransportComplete, TRANSPORT_REQUIRED_MESSAGE } from '../../utils/dcTransport';
+import { showAlert } from '../../utils/showAlert';
 
 type ProductRow = {
   id: string;
@@ -86,7 +87,7 @@ export default function DCTermWiseRequestDCScreen({ navigation, route }: any) {
         ]);
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to load DC');
+      showAlert('Error', e?.message || 'Failed to load DC');
       navigation.goBack();
     } finally {
       setLoading(false);
@@ -97,13 +98,18 @@ export default function DCTermWiseRequestDCScreen({ navigation, route }: any) {
     if (!dc) return;
     const orderId = dcOrder?._id ?? (dc.dcOrderId && typeof dc.dcOrderId === 'object' ? dc.dcOrderId._id : dc.dcOrderId);
     if (!orderId) {
-      Alert.alert('Error', 'This DC has no linked order.');
+      showAlert('Error', 'This DC has no linked order.');
+      return;
+    }
+
+    if (!isTransportComplete(dcOrder || dc.dcOrderId)) {
+      showAlert('Transport required', TRANSPORT_REQUIRED_MESSAGE);
       return;
     }
 
     const totalQty = productRows.reduce((sum, r) => sum + (r.quantity || 0), 0);
     if (totalQty <= 0) {
-      Alert.alert('Error', 'At least one product must have quantity > 0');
+      showAlert('Error', 'At least one product must have quantity > 0');
       return;
     }
 
@@ -111,11 +117,10 @@ export default function DCTermWiseRequestDCScreen({ navigation, route }: any) {
     try {
       await apiService.put(`/dc/${dcId}`, { status: 'po_submitted' });
       await apiService.put(`/dc-orders/${orderId}`, { status: 'dc_requested' });
-      Alert.alert('Done', 'DC requested. It will appear in Closed Sales and follow the normal flow.', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      showAlert('Done', 'DC requested. It will appear in Closed Sales and follow the normal flow.');
+      navigation.goBack();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to request DC');
+      showAlert('Error', e?.message || 'Failed to request DC');
     } finally {
       setSubmitting(false);
     }

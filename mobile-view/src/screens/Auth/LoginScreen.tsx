@@ -3,15 +3,15 @@ import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
+  Pressable,
   StyleSheet,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { colors, gradients } from '../../theme/colors';
 import { typography } from '../../theme/typography';
@@ -20,19 +20,21 @@ export default function LoginScreen() {
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const { login } = useAuth();
 
   const handleLogin = async () => {
+    setError(null);
     if (!mobile || !password) {
-      Alert.alert('Error', 'Please enter mobile number or email and password');
+      setError('Please enter mobile number or email and password');
       return;
     }
 
     setLoading(true);
     try {
       await login(mobile, password);
-    } catch (error: any) {
-      Alert.alert('Login Failed', error.message || 'Invalid credentials');
+    } catch (err: any) {
+      setError(err.message || 'Invalid credentials');
     } finally {
       setLoading(false);
     }
@@ -42,7 +44,7 @@ export default function LoginScreen() {
     <View style={styles.container}>
       <View style={styles.overlay}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.keyboardView}
         >
           <View style={styles.content}>
@@ -58,43 +60,55 @@ export default function LoginScreen() {
 
             <View style={styles.card}>
               <View style={styles.welcomeHeader}>
+                <View style={styles.welcomeIconWrap}>
+                  <Ionicons name="log-in-outline" size={22} color={colors.primary} />
+                </View>
                 <Text style={styles.welcomeText}>Welcome Back!</Text>
                 <Text style={styles.welcomeSubtext}>Sign in to continue to your dashboard</Text>
               </View>
 
               <View style={styles.form}>
+                {error ? <Text style={styles.errorText}>{error}</Text> : null}
                 <View style={styles.inputContainer}>
-                  <Text style={styles.inputLabel}>Mobile number or email</Text>
+                  <View style={styles.labelRow}>
+                    <Ionicons name="person-outline" size={16} color={colors.textSecondary} />
+                    <Text style={styles.inputLabel}>Mobile number or email</Text>
+                  </View>
                   <TextInput
                     style={styles.input}
                     placeholder="Mobile number or email"
-                    placeholderTextColor={colors.textTertiary}
+                    placeholderTextColor={colors.textMuted}
                     value={mobile}
                     onChangeText={setMobile}
                     keyboardType="default"
                     autoCapitalize="none"
                     autoComplete="username"
+                    onSubmitEditing={handleLogin}
                   />
                 </View>
 
                 <View style={styles.inputContainer}>
-                  <Text style={styles.inputLabel}>Password</Text>
+                  <View style={styles.labelRow}>
+                    <Ionicons name="lock-closed-outline" size={16} color={colors.textSecondary} />
+                    <Text style={styles.inputLabel}>Password</Text>
+                  </View>
                   <TextInput
                     style={styles.input}
                     placeholder="Enter your password"
-                    placeholderTextColor={colors.textTertiary}
+                    placeholderTextColor={colors.textMuted}
                     value={password}
                     onChangeText={setPassword}
                     secureTextEntry
                     autoCapitalize="none"
+                    onSubmitEditing={handleLogin}
                   />
                 </View>
 
-                <TouchableOpacity
-                  style={[styles.button, loading && styles.buttonDisabled]}
+                <Pressable
+                  style={({ pressed }) => [styles.button, loading && styles.buttonDisabled, pressed && { opacity: 0.85 }]}
                   onPress={handleLogin}
                   disabled={loading}
-                  activeOpacity={0.8}
+                  accessibilityRole="button"
                 >
                   <LinearGradient
                     colors={gradients.primary}
@@ -105,10 +119,13 @@ export default function LoginScreen() {
                     {loading ? (
                       <ActivityIndicator color="#fff" />
                     ) : (
-                      <Text style={styles.buttonText}>Sign In</Text>
+                      <View style={styles.buttonContent}>
+                        <Ionicons name="arrow-forward-circle" size={20} color="#fff" />
+                        <Text style={styles.buttonText}>Sign In</Text>
+                      </View>
                     )}
                   </LinearGradient>
-                </TouchableOpacity>
+                </Pressable>
               </View>
             </View>
           </View>
@@ -121,11 +138,11 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: colors.background,
   },
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    backgroundColor: colors.accent,
   },
   keyboardView: {
     flex: 1,
@@ -137,43 +154,47 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 56,
+    marginBottom: 40,
   },
   logoImage: {
     width: 280,
     height: 120,
-    marginBottom: 24,
-    shadowColor: colors.shadowDark,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 12,
+    marginBottom: 20,
   },
   title: {
     ...typography.display.medium,
-    color: '#F5F5F5',
-    marginBottom: 12,
+    color: colors.textPrimary,
+    marginBottom: 8,
   },
   subtitle: {
     ...typography.body.large,
-    color: '#A3A3A3',
+    color: colors.textSecondary,
     fontWeight: '500',
   },
   card: {
     backgroundColor: colors.backgroundLight,
-    borderRadius: 28,
-    padding: 32,
+    borderRadius: 24,
+    padding: 28,
     shadowColor: colors.shadowDark,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    elevation: 16,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 8,
     borderWidth: 1,
-    borderColor: colors.borderLight,
+    borderColor: colors.border,
   },
   welcomeHeader: {
-    marginBottom: 32,
+    marginBottom: 28,
     alignItems: 'center',
+  },
+  welcomeIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
   },
   welcomeText: {
     ...typography.heading.h1,
@@ -191,20 +212,25 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   inputContainer: {
-    marginBottom: 20,
+    marginBottom: 18,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
   },
   inputLabel: {
     ...typography.label.medium,
     color: colors.textPrimary,
-    marginBottom: 10,
+    marginLeft: 6,
   },
   input: {
-    backgroundColor: colors.background,
-    borderRadius: 14,
-    padding: 18,
+    backgroundColor: colors.backgroundMuted,
+    borderRadius: 12,
+    padding: 16,
     ...typography.body.large,
     color: colors.textPrimary,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: colors.border,
   },
   button: {
@@ -213,12 +239,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
     shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
-    elevation: 6,
+    elevation: 5,
+    cursor: 'pointer',
   },
   buttonGradient: {
     padding: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonContent: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -230,5 +262,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     letterSpacing: 0.5,
+    marginLeft: 8,
+  },
+  errorText: {
+    ...typography.body.medium,
+    color: colors.error,
+    backgroundColor: colors.errorLight,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 14,
   },
 });

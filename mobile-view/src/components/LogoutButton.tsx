@@ -1,24 +1,13 @@
 import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, Alert } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { TouchableOpacity, Text, StyleSheet } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { confirmLogout } from '../utils/confirmLogout';
 
 export default function LogoutButton() {
   const { logout } = useAuth();
-  const navigation = useNavigation<any>();
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-        },
-      },
-    ]);
+    confirmLogout(logout);
   };
 
   return (

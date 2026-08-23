@@ -81,7 +81,7 @@ export default function ReturnsWarehouseScreen({ navigation }: any) {
 
   return (
     <ScreenShell
-      title="Warehouse Returns"
+      title="Warehouse Returns List"
       loading={loading}
     >
 <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
