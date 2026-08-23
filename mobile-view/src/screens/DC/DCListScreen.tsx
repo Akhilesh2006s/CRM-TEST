@@ -14,7 +14,7 @@ import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, DataTable } from '../../ui/WebPrimitives';
-import { Alert } from 'react-native';
+import { confirmLogout } from '../../utils/confirmLogout';
 
 interface DCItem {
   _id: string;
@@ -38,17 +38,7 @@ export default function DCListScreen({ navigation, route }: any) {
   const isExecutiveMyDC = user?.role === 'Executive' && type === 'sales';
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-          (navigation as any).reset({ index: 0, routes: [{ name: 'Login' }] });
-        },
-      },
-    ]);
+    confirmLogout(logout);
   };
 
   useEffect(() => {

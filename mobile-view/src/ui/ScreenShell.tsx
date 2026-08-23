@@ -57,7 +57,17 @@ export default function ScreenShell({
     <View style={styles.root}>
       <View style={styles.topBar}>
         {showBack ? (
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
+          <TouchableOpacity
+            onPress={() => {
+              if (navigation.canGoBack()) {
+                navigation.goBack();
+                return;
+              }
+              navigation.navigate('MainTabs' as never);
+            }}
+            style={styles.backBtn}
+            hitSlop={12}
+          >
             <Ionicons name="chevron-back" size={26} color={colors.primary} />
           </TouchableOpacity>
         ) : (
@@ -73,7 +83,7 @@ export default function ScreenShell({
       </View>
 
       {noScroll ? (
-        <View style={[styles.content, contentContainerStyle]}>{body}</View>
+        <View style={[styles.contentFill, contentContainerStyle]}>{body}</View>
       ) : (
         <ScrollView
           style={styles.scroll}
@@ -110,6 +120,8 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
   headerRight: { minWidth: 40, alignItems: 'flex-end' },
   scroll: { flex: 1 },
+  /** Fills remaining height under the top bar (required for nested ScrollView + sticky footers). */
+  contentFill: { flex: 1, minHeight: 0 },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
   loadingWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 48 },
   loadingText: { marginTop: 12, fontSize: 14, color: colors.textSecondary },

@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../context/AuthContext';
+import { confirmLogout } from '../utils/confirmLogout';
 import { colors, gradients } from '../theme/colors';
 import { typography } from '../theme/typography';
 
@@ -21,10 +22,7 @@ export default function HeaderWithLogout({
   const { logout, user } = useAuth();
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: logout },
-    ]);
+    confirmLogout(logout);
   };
 
   return (

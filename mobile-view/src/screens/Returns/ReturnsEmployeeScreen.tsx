@@ -1,3 +1,6 @@
+/**
+ * Employee Returns List — admin view of all executive stock returns.
+ */
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -7,183 +10,388 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { apiService } from '../../services/api';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput } from '../../ui/WebPrimitives';
+import MessageBanner from '../../components/MessageBanner';
 import { useAuth } from '../../context/AuthContext';
+import { getRoleFlags } from '../../utils/roles';
 
-export default function ReturnsEmployeeScreen({ navigation }: any) {
+function formatDate(dateString?: string) {
+  if (!dateString) return '-';
+  try {
+    return new Date(dateString).toLocaleDateString('en-US');
+  } catch {
+    return '-';
+  }
+}
+
+function formatCreated(dateString?: string) {
+  if (!dateString) return '-';
+  try {
+    return new Date(dateString).toLocaleString('en-US');
+  } catch {
+    return '-';
+  }
+}
+
+function cell(value: string | number | undefined | null) {
+  if (value === undefined || value === null || value === '') return '-';
+  return String(value);
+}
+
+function getLeadName(ret: any) {
+  return ret.leadId?.school_name || ret.dcOrderId?.school_name || ret.customerName || '-';
+}
+
+function getExecutiveName(ret: any) {
+  return ret.executiveName || ret.createdBy?.name || '-';
+}
+
+function getManagerText(ret: any) {
+  if (ret.rejectionReason) return { text: `Rejected: ${ret.rejectionReason}`, rejected: true };
+  if (ret.managerRemarks) return { text: ret.managerRemarks, rejected: false };
+  return { text: '-', rejected: false };
+}
+
+function showError(message: string, setBanner: (v: any) => void) {
+  if (Platform.OS === 'web') {
+    setBanner({ type: 'error', message });
+  } else {
+    Alert.alert('Error', message);
+  }
+}
+
+export default function ReturnsEmployeeScreen({ navigation, route }: any) {
   const { user } = useAuth();
-  const [myReturns, setMyReturns] = useState<any[]>([]);
+  const { isAdmin } = getRoleFlags(user);
+  const isExecutiveScreen = route?.name === 'ReturnsExecutive';
+
+  const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [banner, setBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const [returnDate, setReturnDate] = useState('');
+  const [lrNumber, setLrNumber] = useState('');
+  const [finYear, setFinYear] = useState('');
+  const [schoolType, setSchoolType] = useState('');
+  const [schoolCode, setSchoolCode] = useState('');
+  const [remarks, setRemarks] = useState('');
+
+  const loadData = useCallback(async () => {
+    if (!user?._id) return;
+    try {
+      setLoading(true);
+      const url = isExecutiveScreen
+        ? '/stock-returns/executive/mine'
+        : isAdmin
+          ? '/stock-returns/executive/list'
+          : '/stock-returns/executive/mine';
+      const returnsData = await apiService.get(url).catch(() => []);
+      setReturns(Array.isArray(returnsData) ? returnsData : returnsData?.data || []);
+    } catch (error: any) {
+      showError(error.message || 'Failed to load returns', setBanner);
+      setReturns([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?._id, isAdmin, isExecutiveScreen]);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [user?._id])
+    }, [loadData]),
   );
 
-  const loadData = async () => {
-    if (!user?._id) return;
-    try {
-      setLoading(true);
-      const returnsData = await apiService.get('/stock-returns/executive/mine').catch(() => []);
-      setMyReturns(Array.isArray(returnsData) ? returnsData : (returnsData?.data || []));
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load data');
-    } finally {
-      setLoading(false);
-    }
+  const openReturn = (ret: any) => {
+    navigation.navigate('StockReturnAdd', { returnId: ret._id });
   };
 
-  const drafts = myReturns.filter((r) => r.status === 'Draft');
-  const submittedReturns = myReturns.filter((r) => r.status !== 'Draft');
+  if (isExecutiveScreen) {
+    const allReturns = returns.filter((r) => r.status !== 'Draft');
+    const drafts = returns.filter((r) => r.status === 'Draft');
 
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return '-';
-    try {
-      return new Date(dateString).toLocaleDateString('en-IN');
-    } catch {
-      return '-';
-    }
-  };
+    const getReturnId = (ret: any) =>
+      ret.returnId || (ret.returnNumber != null ? `RET-${ret.returnNumber}` : String(ret._id || '').slice(-8));
+    const getSaleId = (ret: any) =>
+      ret.saleId ||
+      ret.dcOrderId?.dc_code ||
+      (typeof ret.dcOrderId === 'string' ? ret.dcOrderId : '-') ||
+      '-';
+    const getSchool = (ret: any) => ret.customerName || ret.dcOrderId?.school_name || '-';
+    const getQty = (ret: any) =>
+      ret.totalQuantity ??
+      ret.returnQty ??
+      (Array.isArray(ret.products)
+        ? ret.products.reduce((s: number, p: any) => s + (p.returnQty || 0), 0)
+        : 0);
 
-  const nextActionByStatus: Record<string, string> = {
-    Draft: 'Complete & Submit',
-    Submitted: 'Warehouse Verification',
-    Received: 'Under Review',
-    'Pending Manager Approval': 'Manager Decision',
-    Approved: 'Closed',
-    'Partially Approved': 'Closed',
-    Rejected: '—',
-    'Sent Back': 'Resubmit',
-    'Stock Updated': 'Closed',
-    Closed: '—',
-  };
-
-  if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
+      <ScreenShell title="Stock Returns" loading={loading} onRefresh={loadData}>
+        {banner ? (
+          <MessageBanner type={banner.type} message={banner.message} onDismiss={() => setBanner(null)} />
+        ) : null}
+
+        <View style={styles.executiveHeader}>
+          <Text style={styles.executiveSubtitle}>Manage stock returns for your sales</Text>
+          <TouchableOpacity
+            style={styles.addReturnButton}
+            onPress={() => navigation.navigate('StockReturnAdd')}
+          >
+            <Text style={styles.addReturnButtonText}>+ Add Return</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+          {drafts.length > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>Saved drafts ({drafts.length})</Text>
+              {drafts.map((ret) => (
+                <TouchableOpacity key={ret._id} style={styles.resultCard} onPress={() => openReturn(ret)}>
+                  <Text style={styles.returnNumber}>{getReturnId(ret)}</Text>
+                  <Text style={styles.infoValue}>Draft · Tap to continue</Text>
+                </TouchableOpacity>
+              ))}
+            </>
+          )}
+
+          {allReturns.length === 0 && !loading ? (
+            <Text style={styles.emptyText}>No returns found</Text>
+          ) : (
+            allReturns.map((ret) => (
+              <View key={ret._id} style={styles.resultCard}>
+                <View style={styles.resultTop}>
+                  <Text style={styles.returnNumber}>{getReturnId(ret)}</Text>
+                  <Text style={styles.statusBadge}>{cell(ret.status)}</Text>
+                </View>
+                <InfoRow label="LR No" value={cell(ret.lrNumber)} />
+                <InfoRow label="Fin Year" value={cell(ret.finYear)} />
+                <InfoRow label="School" value={getSchool(ret)} />
+                <InfoRow label="School Code" value={cell(ret.schoolCode)} />
+                <InfoRow label="Sale ID" value={getSaleId(ret)} />
+                <InfoRow label="Return Type" value={cell(ret.returnType)} />
+                <InfoRow label="Return Qty" value={String(getQty(ret))} />
+                <TouchableOpacity style={styles.viewButton} onPress={() => openReturn(ret)}>
+                  <Text style={styles.viewButtonText}>View</Text>
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+        </ScrollView>
+      </ScreenShell>
     );
   }
 
   return (
-    <ScreenShell
-      title="Employee Stock Returns"
-      loading={loading}
-    >
-<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        <TouchableOpacity
-          style={styles.addReturnButton}
-          onPress={() => navigation.navigate('StockReturnAdd')}
-        >
-          <Text style={styles.addReturnButtonText}>+ Add Return</Text>
-        </TouchableOpacity>
+    <ScreenShell title="Employee Stock Returns" loading={loading} onRefresh={loadData}>
+      {banner ? (
+        <MessageBanner type={banner.type} message={banner.message} onDismiss={() => setBanner(null)} />
+      ) : null}
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Saved drafts</Text>
-          {drafts.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No saved drafts. Tap "Add Return" to create one.</Text>
-            </View>
-          ) : (
-            drafts.map((ret) => (
-              <TouchableOpacity
-                key={ret._id}
-                style={styles.returnCard}
-                onPress={() => navigation.navigate('StockReturnAdd', { returnId: ret._id })}
-                activeOpacity={0.8}
-              >
-                <View style={styles.returnHeader}>
-                  <Text style={styles.returnNumber}>{ret.returnId || `Return #${ret.returnNumber}`}</Text>
-                  <Text style={styles.returnDate}>{formatDate(ret.returnDate)}</Text>
-                </View>
-                <View style={styles.returnStatusRow}>
-                  <Text style={styles.returnStatusLabel}>Status:</Text>
-                  <Text style={[styles.returnStatusValue, styles.statusDraft]}>{ret.status || 'Draft'}</Text>
-                </View>
-                {ret.customerName ? <Text style={styles.returnInfo}>Customer: {ret.customerName}</Text> : null}
-                <Text style={styles.returnMeta}>Updated: {formatDate(ret.updatedAt)} · Tap to edit</Text>
-              </TouchableOpacity>
-            ))
-          )}
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+        <View style={styles.formCard}>
+          <Field label="Return Date *">
+            <WebInput
+              style={styles.input}
+              placeholder="YYYY-MM-DD"
+              value={returnDate}
+              onChangeText={setReturnDate}
+            />
+          </Field>
+          <Field label="LR No (optional)">
+            <WebInput
+              style={styles.input}
+              placeholder="e.g. C062455"
+              value={lrNumber}
+              onChangeText={setLrNumber}
+            />
+          </Field>
+          <Field label="Fin Year (optional)">
+            <WebInput
+              style={styles.input}
+              placeholder="e.g. 2025-26"
+              value={finYear}
+              onChangeText={setFinYear}
+            />
+          </Field>
+          <Field label="School Type (optional)">
+            <WebInput
+              style={styles.input}
+              placeholder="New / Existing"
+              value={schoolType}
+              onChangeText={setSchoolType}
+            />
+          </Field>
+          <Field label="School Code (optional)">
+            <WebInput
+              style={styles.input}
+              placeholder="e.g. VJVIJ5050"
+              value={schoolCode}
+              onChangeText={setSchoolCode}
+            />
+          </Field>
+          <Field label="Remarks">
+            <WebInput
+              style={[styles.input, styles.textArea]}
+              placeholder="Reason/notes for return"
+              value={remarks}
+              onChangeText={setRemarks}
+              multiline
+            />
+          </Field>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>My Returns</Text>
-          {submittedReturns.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No submitted returns yet</Text>
-            </View>
-          ) : (
-            submittedReturns.map((ret) => (
-              <TouchableOpacity
-                key={ret._id}
-                style={styles.returnCard}
-                onPress={() => navigation.navigate('StockReturnAdd', { returnId: ret._id })}
-                activeOpacity={0.8}
-              >
-                <View style={styles.returnHeader}>
-                  <Text style={styles.returnNumber}>{ret.returnId || `Return #${ret.returnNumber}`}</Text>
-                  <Text style={styles.returnDate}>{formatDate(ret.returnDate)}</Text>
-                </View>
-                <View style={styles.returnStatusRow}>
-                  <Text style={styles.returnStatusLabel}>Status:</Text>
-                  <Text style={[styles.returnStatusValue, ret.status === 'Draft' && styles.statusDraft]}>{ret.status || '—'}</Text>
-                </View>
-                <Text style={styles.returnNextAction}>Next: {nextActionByStatus[ret.status] || '—'}</Text>
-                {ret.customerName ? <Text style={styles.returnInfo}>Customer: {ret.customerName}</Text> : null}
-                {ret.remarks && <Text style={styles.returnRemarks}>{ret.remarks}</Text>}
-                {ret.lrNumber && <Text style={styles.returnInfo}>LR No: {ret.lrNumber}</Text>}
-                <Text style={styles.returnMeta}>Created: {formatDate(ret.createdAt)} · Updated: {formatDate(ret.updatedAt)}</Text>
-              </TouchableOpacity>
-            ))
-          )}
+        <View style={styles.resultsHeader}>
+          <Text style={styles.resultsTitle}>
+            {isAdmin ? 'All Executive Returns' : 'My Returns'} ({returns.length})
+          </Text>
         </View>
+
+        {returns.length === 0 && !loading ? (
+          <Text style={styles.emptyText}>No returns yet</Text>
+        ) : (
+          returns.map((ret) => {
+            const manager = getManagerText(ret);
+            return (
+              <View key={ret._id} style={styles.resultCard}>
+                <View style={styles.resultTop}>
+                  <Text style={styles.returnNumber}>Return #{ret.returnNumber}</Text>
+                  <Text style={styles.status}>{cell(ret.status)}</Text>
+                </View>
+                <InfoRow label="LR No" value={cell(ret.lrNumber)} />
+                <InfoRow label="Fin Year" value={cell(ret.finYear)} />
+                <InfoRow label="Lead" value={getLeadName(ret)} />
+                <InfoRow label="Return Date" value={formatDate(ret.returnDate)} />
+                {isAdmin && <InfoRow label="Executive" value={getExecutiveName(ret)} />}
+                <InfoRow label="Remarks" value={cell(ret.remarks)} />
+                {isAdmin && (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>Manager / rejection</Text>
+                    <Text style={[styles.infoValue, manager.rejected && styles.rejectedText]}>
+                      {manager.text}
+                    </Text>
+                  </View>
+                )}
+                <InfoRow label="Created" value={formatCreated(ret.createdAt)} />
+                <TouchableOpacity style={styles.viewButton} onPress={() => openReturn(ret)}>
+                  <Text style={styles.viewButtonText}>View</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })
+        )}
       </ScrollView>
     </ScreenShell>
   );
 }
 
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      {children}
+    </View>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitleContainer: { flex: 1, alignItems: 'center' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, marginBottom: 4 },
-  headerSubtitle: { ...typography.body.small, color: colors.textLight + 'CC' },
-  placeholder: { width: 40 },
   content: { flex: 1 },
-  contentContainer: { padding: 16, paddingBottom: 32 },
-  section: { marginBottom: 24 },
-  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 16 },
-  emptyContainer: { padding: 20, alignItems: 'center' },
-  emptyText: { ...typography.body.medium, color: colors.textSecondary },
-  addReturnButton: { backgroundColor: colors.primary, borderRadius: 12, padding: 16, marginBottom: 20, alignItems: 'center' },
+  contentContainer: { padding: 16, paddingBottom: 40 },
+  formCard: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    marginBottom: 16,
+  },
+  field: { marginBottom: 12 },
+  label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 },
+  input: {
+    ...typography.body.medium,
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    color: colors.textPrimary,
+  },
+  textArea: { minHeight: 72, textAlignVertical: 'top' },
+  resultsHeader: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    marginBottom: 12,
+  },
+  resultsTitle: { ...typography.label.large, color: colors.textPrimary, fontWeight: '600' },
+  emptyText: { ...typography.body.medium, color: colors.textSecondary, textAlign: 'center', paddingVertical: 24 },
+  resultCard: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    marginBottom: 12,
+  },
+  resultTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  returnNumber: { ...typography.label.large, color: colors.textPrimary, fontWeight: '600' },
+  status: { ...typography.body.small, color: colors.textSecondary, fontWeight: '600' },
+  infoRow: { flexDirection: 'row', marginBottom: 6, gap: 8 },
+  infoLabel: { ...typography.body.small, color: colors.textSecondary, width: 130 },
+  infoValue: { ...typography.body.small, color: colors.textPrimary, flex: 1 },
+  rejectedText: { color: '#DC2626' },
+  viewButton: {
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
+  viewButtonText: { ...typography.label.medium, color: '#059669', fontWeight: '600' },
+  addReturnButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
   addReturnButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
-  returnCard: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: colors.shadowDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
-  returnHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  returnNumber: { ...typography.heading.h4, color: colors.textPrimary },
-  returnDate: { ...typography.body.small, color: colors.textSecondary },
-  returnStatusRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  returnStatusLabel: { ...typography.body.small, color: colors.textSecondary, marginRight: 6 },
-  returnStatusValue: { ...typography.body.small, color: colors.textPrimary, fontWeight: '600' },
-  statusDraft: { color: colors.warning },
-  returnNextAction: { ...typography.body.small, color: colors.info, marginBottom: 4 },
-  returnRemarks: { ...typography.body.medium, color: colors.textPrimary, marginBottom: 4 },
-  returnInfo: { ...typography.body.small, color: colors.textSecondary, marginBottom: 2 },
-  returnMeta: { ...typography.body.small, color: colors.textTertiary, marginTop: 6 },
+  executiveHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  executiveSubtitle: { ...typography.body.small, color: colors.textSecondary },
+  statusBadge: {
+    ...typography.label.small,
+    color: colors.textSecondary,
+    backgroundColor: colors.background,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
 });
-
-

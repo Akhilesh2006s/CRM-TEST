@@ -22,9 +22,17 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/** Survives Fast Refresh so the app does not flash to login / a blank screen. */
+let sessionUser: User | null = null;
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUserState] = useState<User | null>(sessionUser);
+  const [loading, setLoading] = useState(!sessionUser);
+
+  const setUser = (next: User | null) => {
+    sessionUser = next;
+    setUserState(next);
+  };
 
   useEffect(() => {
     checkAuth();
@@ -37,30 +45,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const checkAuth = async () => {
     try {
-      // Add timeout to prevent infinite loading
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Auth check timeout')), 3000)
-      );
-      
-      const authPromise = (async () => {
-        const token = await AsyncStorage.getItem('authToken');
-        const userData = await AsyncStorage.getItem('userData');
-        
-        if (token && userData) {
-          apiService.setToken(token);
-          const user = JSON.parse(userData);
-          setUser(user);
-        } else {
-          // No stored auth, ensure user is null
-          setUser(null);
-        }
-      })();
+      const token = await AsyncStorage.getItem('authToken');
+      const userData = await AsyncStorage.getItem('userData');
 
-      await Promise.race([authPromise, timeoutPromise]);
+      if (token && userData) {
+        apiService.setToken(token);
+        const parsed = JSON.parse(userData);
+        const id = parsed?._id || parsed?.id;
+        if (id) {
+          setUser({ ...parsed, _id: id });
+        }
+      }
     } catch (error) {
       console.error('Auth check error:', error);
-      // On error, clear any invalid data and show login
-      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -80,7 +77,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await AsyncStorage.setItem('userData', JSON.stringify(userData));
       
       apiService.setToken(token);
-      setUser(userData);
+      const id = userData?._id || userData?.id;
+      setUser(id ? { ...userData, _id: id } : userData);
       console.log('Login successful for user:', userData.email);
     } catch (error: any) {
       console.error('Login error:', {
@@ -98,7 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       // Handle network errors
       if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.message?.includes('Network Error') || error.message?.includes('timeout')) {
-        throw new Error('Cannot connect to server. Make sure:\n1. Backend is running on port 5000\n2. API URL is correct\n3. Device and computer are on same network\n4. Firewall allows port 5000');
+        throw new Error('Cannot connect to server. Make sure the backend is running on port 5000.');
       }
       
       // Handle other axios errors
@@ -117,6 +115,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    setUser(null);
+    apiService.setToken('');
     try {
       await AsyncStorage.multiRemove(['authToken', 'userData', 'authUser']);
     } catch (e) {
@@ -124,8 +124,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await AsyncStorage.removeItem('userData');
       await AsyncStorage.removeItem('authUser');
     }
-    apiService.setToken('');
-    setUser(null);
   };
 
   const isFirstTime = user ? !user.hasCompletedFirstTimeSetup : false;

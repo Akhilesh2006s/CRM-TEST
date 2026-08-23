@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Platform,
   type TextInputProps,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
@@ -66,20 +67,59 @@ export function WebSelect({
   label,
   value,
   onValueChange,
-  items,
+  items = [],
   placeholder,
+  disabled,
+  compact,
 }: {
   label?: string;
   value: string;
   onValueChange: (v: string) => void;
-  items: { label: string; value: string }[];
+  items?: { label: string; value: string }[];
   placeholder?: string;
+  disabled?: boolean;
+  /** Tighter layout for data tables */
+  compact?: boolean;
 }) {
+  if (Platform.OS === 'web') {
+    return (
+      <View style={[styles.selectWrap, compact && styles.selectWrapCompact]}>
+        {label ? <WebLabel>{label}</WebLabel> : null}
+        {React.createElement(
+          'select',
+          {
+            value: value ?? '',
+            disabled: !!disabled,
+            onChange: (e: any) => onValueChange(e.target.value || ''),
+            style: {
+              width: '100%',
+              padding: compact ? '6px 4px' : '10px 12px',
+              borderRadius: 8,
+              border: '1px solid #E2E8F0',
+              fontSize: compact ? 12 : 15,
+              backgroundColor: disabled ? '#F1F5F9' : '#FFFFFF',
+              color: '#1E293B',
+              marginBottom: 0,
+              boxSizing: 'border-box',
+              minHeight: compact ? 34 : 44,
+            },
+          },
+          [
+            React.createElement('option', { key: '__placeholder', value: '' }, placeholder || 'Select…'),
+            ...items.map((i) =>
+              React.createElement('option', { key: String(i.value), value: i.value }, i.label)
+            ),
+          ]
+        )}
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.selectWrap}>
+    <View style={[styles.selectWrap, compact && styles.selectWrapCompact]}>
       {label ? <WebLabel>{label}</WebLabel> : null}
-      <View style={styles.pickerBox}>
-        <Picker selectedValue={value} onValueChange={onValueChange}>
+      <View style={[styles.pickerBox, compact && styles.pickerBoxCompact, disabled && styles.pickerBoxDisabled]}>
+        <Picker selectedValue={value} onValueChange={onValueChange} enabled={!disabled}>
           {placeholder ? <Picker.Item label={placeholder} value="" /> : null}
           {items.map((i) => (
             <Picker.Item key={i.value} label={i.label} value={i.value} />
@@ -152,6 +192,7 @@ const styles = StyleSheet.create({
   btnTextOutline: { color: colors.textPrimary, fontWeight: '600', fontSize: 14 },
   btnTextDestructive: { color: colors.error, fontWeight: '600', fontSize: 14 },
   selectWrap: { marginBottom: 12 },
+  selectWrapCompact: { marginBottom: 0, width: '100%' },
   pickerBox: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -159,6 +200,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.backgroundLight,
     overflow: 'hidden',
   },
+  pickerBoxCompact: { minHeight: 34 },
+  pickerBoxDisabled: { opacity: 0.6, backgroundColor: colors.backgroundMuted },
   table: {
     backgroundColor: colors.backgroundLight,
     borderRadius: radii.md,

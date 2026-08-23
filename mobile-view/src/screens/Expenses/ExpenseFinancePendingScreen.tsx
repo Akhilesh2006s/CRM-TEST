@@ -86,7 +86,7 @@ export default function ExpenseFinancePendingScreen({ navigation }: any) {
 
   return (
     <ScreenShell
-      title="Finance Approved Exp List"
+      title="Finance Pending Expenses"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}

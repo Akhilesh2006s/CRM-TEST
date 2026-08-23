@@ -33,12 +33,27 @@ export function useLocalBackend(): boolean {
   );
 }
 
+function isLocalhostWeb() {
+  try {
+    if (typeof window === 'undefined' || !window.location) return false;
+    const host = window.location.hostname;
+    return host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * API base URL (includes `/api` suffix).
  * Default: production Railway (same as web). Override with `EXPO_PUBLIC_API_URL`.
  * Local dev: set `EXPO_PUBLIC_USE_PRODUCTION=false` in `mobile-view/.env`.
+ * Expo web on localhost uses the local backend so Cursor/browser login is not blocked by CORS.
  */
 export const getApiUrl = (): string => {
+  if (isLocalhostWeb()) {
+    return LOCAL_API_URL;
+  }
+
   const envUrl =
     typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_API_URL;
   if (envUrl) {
@@ -101,8 +116,9 @@ class ApiService {
   }
 
   private connectionErrorHint(): string {
-    if (useLocalBackend()) {
-      return `Cannot connect to server (${this.baseURL}). For local dev: backend on port 5001, same WiFi, set EXPO_PUBLIC_API_URL=http://YOUR_LAPTOP_IP:5001/api. For production, remove EXPO_PUBLIC_USE_PRODUCTION=false from .env.`;
+    const local = this.baseURL.includes('localhost') || this.baseURL.includes('127.0.0.1');
+    if (local || useLocalBackend()) {
+      return `Cannot reach the local API at ${this.baseURL}. Make sure the backend is running (npm start in backend).`;
     }
     return `Cannot connect to production API (${this.baseURL}). Check internet connection and try again.`;
   }
@@ -153,9 +169,33 @@ class ApiService {
   }
 
   async put(endpoint: string, data: any) {
-    const headers = await this.getHeaders();
-    const response = await axios.put(`${this.baseURL}${endpoint}`, data, { headers });
-    return response.data;
+    try {
+      const headers = await this.getHeaders();
+      const response = await axios.put(`${this.baseURL}${endpoint}`, data, {
+        headers,
+        timeout: 30000,
+      });
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
+      if (error.response?.status) {
+        throw new Error(
+          error.response?.data?.error ||
+            `Request failed with status code ${error.response.status}`
+        );
+      }
+      if (
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ETIMEDOUT' ||
+        error.message?.includes('Network Error') ||
+        error.message?.includes('timeout')
+      ) {
+        throw new Error(this.connectionErrorHint());
+      }
+      throw error;
+    }
   }
 
   async upload(endpoint: string, formData: FormData) {

@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthContext';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { confirmLogout } from '../../utils/confirmLogout';
 
 interface Lead {
   _id: string;
@@ -37,17 +38,7 @@ export default function LeadsListScreen({ navigation }: any) {
   const [filter, setFilter] = useState<'all' | 'open' | 'followup' | 'closed'>('all');
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-          (navigation as any).reset({ index: 0, routes: [{ name: 'Login' }] });
-        },
-      },
-    ]);
+    confirmLogout(logout);
   };
 
   useEffect(() => {

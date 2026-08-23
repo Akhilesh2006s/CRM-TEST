@@ -5,49 +5,61 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  TextInput,
   Alert,
   ActivityIndicator,
   Modal,
-  Image,
   Platform,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { apiService } from '../../services/api';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebSelect } from '../../ui/WebPrimitives';
 import { useAuth } from '../../context/AuthContext';
+import MessageBanner from '../../components/MessageBanner';
+import { navigateRoot } from '../../navigation/navigationRef';
+import CloseLeadProductsModal, {
+  type CloseLeadProductRow,
+} from './CloseLeadProductsModal';
+import {
+  assignTermsByLevelCombination,
+  formatProductWithLevel,
+} from '../../utils/levelTermRouting';
 
-const TERM_OPTIONS = ['Term 1', 'Term 2', 'Both'];
+type ProductDetail = CloseLeadProductRow;
 
-type ProductDetail = {
-  id: string;
-  product: string;
-  class: string;
-  fromClass?: string;
-  toClass?: string;
-  category: string;
-  quantity: number;
-  strength: number;
-  price: number;
-  total: number;
-  level: string;
-  specs: string;
-  subject?: string;
-  term?: string;
-  isParentRow?: boolean;
-  sameRateForAllClasses?: boolean;
-  selectedSubjects?: string[];
-  selectedSpecs?: string[];
-};
+function getCategoriesForProduct(catalog: any[], productName: string): string[] {
+  const product = catalog.find(
+    (p) => (p.productName || p.name || p.product || '') === productName,
+  );
+  if (!product?.hasCategory) return [];
+  if (Array.isArray(product.categories) && product.categories.length > 0) {
+    return product.categories.map((c: any) => String(c).trim()).filter(Boolean);
+  }
+  return [];
+}
+
+/** e.g. 2026 → "2026-27" (matches existing Close Lead year values). */
+function getCurrentAcademicYear(): string {
+  const y = new Date().getFullYear();
+  return `${y}-${String(y + 1).slice(-2)}`;
+}
+
+/** Newest years first so the current/recent year is at the top of the picker. */
+function getAcademicYearsNewestFirst(count = 4): string[] {
+  const current = new Date().getFullYear();
+  const newestStart = current + 1; // include next year (e.g. 2027-28)
+  return Array.from({ length: count }, (_, i) => {
+    const y = newestStart - i;
+    return `${y}-${String(y + 1).slice(-2)}`;
+  });
+}
 
 export default function LeadCloseScreen({ navigation, route }: any) {
-  const { id } = route.params;
+  const id = route?.params?.id ? String(route.params.id) : '';
   const { user } = useAuth();
   const [lead, setLead] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -55,14 +67,27 @@ export default function LeadCloseScreen({ navigation, route }: any) {
   const [products, setProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
-  const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [productDetails, setProductDetails] = useState<ProductDetail[]>([]);
   const [poPhotoUrl, setPoPhotoUrl] = useState<string>('');
   const [uploadingPO, setUploadingPO] = useState(false);
-  const [showClassPicker, setShowClassPicker] = useState(false);
-  const [pickingFor, setPickingFor] = useState<{id: string, field: 'fromClass' | 'toClass'} | null>(null);
   const [showDeliveryDatePicker, setShowDeliveryDatePicker] = useState(false);
   const [loadedAsDcOrder, setLoadedAsDcOrder] = useState(false);
+  const [formMessage, setFormMessage] = useState<string | null>(null);
+  const [formMessageType, setFormMessageType] = useState<'error' | 'success'>('error');
+  const [splitModalOpen, setSplitModalOpen] = useState(false);
+  const [splitPreview, setSplitPreview] = useState<{
+    term1: { productName: string; strength: number }[];
+    term2: { productName: string; strength: number }[];
+  } | null>(null);
+  const [pendingConvert, setPendingConvert] = useState<{
+    schoolName: string;
+    productsPayload: any[];
+    isDcOrder: boolean;
+  } | null>(null);
+
+  const currentAcademicYear = getCurrentAcademicYear();
+  // Newest academic years first in the Close Lead year dropdown
+  const availableYears = getAcademicYearsNewestFirst(4);
 
   const [form, setForm] = useState({
     school_name: '',
@@ -72,12 +97,20 @@ export default function LeadCloseScreen({ navigation, route }: any) {
     contact_person2: '',
     contact_mobile2: '',
     delivery_date: '',
-    year: '2025-26',
+    year: currentAcademicYear,
   });
 
-  const availableClasses = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
-  const availableCategories = ['New Students', 'Existing Students', 'Both'];
-  const availableYears = ['2024-25', '2025-26', '2026-27', '2027-28'];
+  const todayYmd = () => new Date().toISOString().split('T')[0];
+
+  const showError = (message: string) => {
+    setFormMessageType('error');
+    setFormMessage(message);
+  };
+
+  const showSuccess = (message: string) => {
+    setFormMessageType('success');
+    setFormMessage(message);
+  };
 
   useEffect(() => {
     loadLead();
@@ -151,15 +184,19 @@ export default function LeadCloseScreen({ navigation, route }: any) {
   };
 
   const loadLead = async () => {
+    if (!id) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setLoadedAsDcOrder(false);
       let data: any;
       try {
+        data = await apiService.get(`/leads/${id}`);
+      } catch {
         data = await apiService.get(`/dc-orders/${id}`);
         if (data) setLoadedAsDcOrder(true);
-      } catch (err: any) {
-        data = await apiService.get(`/leads/${id}`);
       }
       
       if (data) {
@@ -174,343 +211,152 @@ export default function LeadCloseScreen({ navigation, route }: any) {
           contact_mobile: data.contact_mobile || '',
           contact_person2: data.decision_maker || data.contact_person2 || '',
           contact_mobile2: data.contact_mobile2 || '',
-          delivery_date: deliveryDate,
-          year: '2025-26',
+          delivery_date: deliveryDate || todayYmd(),
+          year: currentAcademicYear,
         });
         
-        // Pre-fill products if they exist
+        // Prefill product rows if the lead/order already has products
         if (data.products && Array.isArray(data.products) && data.products.length > 0) {
-          const validProducts = data.products
-            .map((p: any) => p.product_name || p.product || p)
-            .filter((name: string) => typeof name === 'string' && name.trim())
-            .map((name: string) => name.trim());
-          setSelectedProducts(validProducts);
+          const rows: ProductDetail[] = data.products
+            .map((p: any, index: number) => {
+              const name = (p.product_name || p.product || '').toString().trim();
+              if (!name) return null;
+              const strength = Number(p.quantity ?? p.strength) || 0;
+              const price = Number(p.unit_price ?? p.price) || 0;
+              return {
+                id: `existing_${index}_${name}`,
+                product: name,
+                class: String(p.class || '1'),
+                category: p.category || '',
+                quantity: strength || 1,
+                strength: strength || 0,
+                price,
+                total: (strength || 0) * price,
+                level: p.level || '',
+                specs: p.specs || 'Regular',
+                subject: p.subject || undefined,
+                deliverables: Array.isArray(p.deliverables) ? p.deliverables : undefined,
+                term: p.term || 'Term 1',
+                isParentRow: false,
+              } as ProductDetail;
+            })
+            .filter(Boolean) as ProductDetail[];
+          if (rows.length > 0) setProductDetails(rows);
         }
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load lead');
-      navigation.goBack();
+      showError(error.message || 'Failed to load lead');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const getProductLevels = (productName: string): string[] => {
-    const product = products.find((p: any) => p.productName === productName);
-    return product?.productLevels || ['L1'];
-  };
-
-  const getDefaultLevel = (productName: string): string => {
-    const levels = getProductLevels(productName);
-    return levels[0] || 'L1';
-  };
-
-  const getProductSpecs = (productName: string): string[] => {
-    const product = products.find((p: any) => p.productName === productName);
-    if (product?.hasSpecs && product.specs) {
-      return Array.isArray(product.specs) ? product.specs : [product.specs];
-    }
-    return ['Regular'];
-  };
-
-  const getProductSubjects = (productName: string): string[] => {
-    const product = products.find((p: any) => p.productName === productName);
-    if (product?.hasSubjects && product.subjects) {
-      return Array.isArray(product.subjects) ? product.subjects : [];
-    }
-    return [];
-  };
-
-  const hasProductSubjects = (productName: string): boolean => {
-    const product = products.find((p: any) => p.productName === productName);
-    return product?.hasSubjects === true && product?.subjects && Array.isArray(product.subjects) && product.subjects.length > 0;
-  };
-
-  const addProductWithSpec = (product: string) => {
-    if (!selectedProducts.includes(product)) {
-      setSelectedProducts([...selectedProducts, product]);
-    }
-    
-    const parentId = Date.now().toString() + Math.random().toString();
-    const productSpecs = getProductSpecs(product);
-    const newRow: ProductDetail = {
-      id: parentId,
-      product: product,
-      class: '1',
-      fromClass: '1',
-      toClass: '10',
-      category: lead?.school_type === 'Existing' ? 'Existing Students' : 'New Students',
-      quantity: 1,
-      strength: 0,
-      price: 0,
-      total: 0,
-      level: getDefaultLevel(product),
-      specs: 'Regular',
-      term: 'Term 1',
-      isParentRow: true,
-      sameRateForAllClasses: false,
-      selectedSubjects: [],
-      selectedSpecs: productSpecs.length > 0 ? productSpecs : ['Regular'],
-    };
-    
-    setProductDetails([...productDetails, newRow]);
-    
-    setTimeout(() => {
-      generateRowsFromRange(parentId, '1', '10');
-    }, 0);
-  };
-
-  const generateRowsFromRange = (parentId: string, fromClass: string, toClass: string) => {
-    setProductDetails(currentDetails => {
-      const parentRow = currentDetails.find(p => p.id === parentId);
-      if (!parentRow || !parentRow.isParentRow) return currentDetails;
-      
-      const from = parseInt(fromClass) || 1;
-      const to = parseInt(toClass) || 10;
-      const selectedSpecs = parentRow.selectedSpecs || [];
-      const specsToUse = selectedSpecs.length > 0 ? selectedSpecs : ['Regular'];
-      const selectedSubjects = parentRow.selectedSubjects || [];
-      const hasSubjects = hasProductSubjects(parentRow.product) && selectedSubjects.length > 0;
-      const subjectsToUse = hasSubjects ? selectedSubjects : [undefined];
-      
-      const otherParentRows = currentDetails.filter(p => p.isParentRow && p.id !== parentId);
-      const otherChildRows = currentDetails.filter(p => !p.isParentRow && !p.id.startsWith(parentId + '_'));
-      
-      const newRows: ProductDetail[] = [];
-      for (let classNum = from; classNum <= to; classNum++) {
-        specsToUse.forEach((spec, specIdx) => {
-          // Create one row per class × spec combination
-          // Combine all selected subjects into a single string or use first subject
-          const subjectDisplay = hasSubjects && selectedSubjects.length > 0 
-            ? selectedSubjects.join(', ') 
-            : undefined;
-          newRows.push({
-            id: parentId + '_' + classNum + '_' + specIdx,
-            product: parentRow.product,
-            class: classNum.toString(),
-            category: parentRow.category,
-            quantity: 1,
-            strength: 0,
-            price: 0,
-            total: 0,
-            level: parentRow.level,
-            specs: spec,
-            subject: subjectDisplay,
-            term: parentRow.term || 'Term 1',
-            isParentRow: false,
-            sameRateForAllClasses: false,
-          });
-        });
-      }
-      
-      const updatedParent = { ...parentRow, fromClass, toClass };
-      return [...otherParentRows, updatedParent, ...otherChildRows, ...newRows];
-    });
-  };
-
-  const updateProductDetail = (id: string, field: string, value: any) => {
-    setProductDetails(currentDetails => {
-      const rowToUpdate = currentDetails.find(p => p.id === id);
-      if (!rowToUpdate) {
-        console.warn('Row not found for update:', id);
-        return currentDetails;
-      }
-      
-      const updated = { ...rowToUpdate, [field]: value };
-      
-      // Handle From/To class changes on parent rows - regenerate rows immediately
-      if (rowToUpdate.isParentRow && (field === 'fromClass' || field === 'toClass' || field === 'selectedSubjects' || field === 'selectedSpecs')) {
-        // Update the parent row first
-        const updatedDetails = currentDetails.map(p => p.id === id ? updated : p);
-        
-        // Regenerate rows with the new values after state update
-        setTimeout(() => {
-          const fromClass = field === 'fromClass' ? value : (updated.fromClass || '1');
-          const toClass = field === 'toClass' ? value : (updated.toClass || '10');
-          console.log('Regenerating rows for', id, 'from', fromClass, 'to', toClass);
-          generateRowsFromRange(id, fromClass, toClass);
-        }, 150);
-        
-        return updatedDetails;
-      }
-      
-      if (field === 'price' || field === 'strength') {
-        updated.total = (Number(updated.strength) || 0) * (Number(updated.price) || 0);
-        
-        // If this is a child row and sameRateForAllClasses is enabled for this product/spec/level combo
-        // Apply to both PRICE and STRENGTH for all classes
-        if (!rowToUpdate.isParentRow && (field === 'price' || field === 'strength')) {
-          const parentRow = currentDetails.find(p => 
-            p.isParentRow && 
-            p.product === rowToUpdate.product &&
-            p.id === rowToUpdate.id.split('_')[0]
-          );
-          
-          if (parentRow?.sameRateForAllClasses) {
-            // Update price or strength for all rows with same product, class, and level
-            // This applies the same value across all specs for that class
-            return currentDetails.map(p => {
-              if (!p.isParentRow && 
-                  p.product === updated.product && 
-                  p.class === updated.class && 
-                  p.level === updated.level) {
-                const newStrength = field === 'strength' ? value : p.strength;
-                const newPrice = field === 'price' ? value : p.price;
-                return {
-                  ...p,
-                  strength: newStrength, // Apply same strength to all specs of this class
-                  price: newPrice, // Apply same price to all specs of this class
-                  total: (Number(newStrength) || 0) * (Number(newPrice) || 0) // Recalculate total
-                };
-              }
-              if (p.id === id) return updated;
-              return p;
-            });
-          }
-        }
-      }
-      
-      return currentDetails.map(p => p.id === id ? updated : p);
-    });
-  };
-
-  const removeProductDetail = (id: string) => {
-    const rowToRemove = productDetails.find(p => p.id === id);
-    
-    if (rowToRemove?.isParentRow) {
-      setProductDetails(productDetails.filter(p => 
-        p.id !== id && !p.id.startsWith(id + '_')
-      ));
-      setSelectedProducts(selectedProducts.filter(p => p !== rowToRemove.product));
-    } else {
-      setProductDetails(productDetails.filter(p => p.id !== id));
     }
   };
 
   const pickPOPhoto = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
+        type: ['application/pdf', 'application/octet-stream'],
         copyToCacheDirectory: true,
       });
 
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const file = result.assets[0];
-        
-        // Validate file type - only PDFs
-        if (!file.mimeType || file.mimeType !== 'application/pdf') {
-          Alert.alert('Error', 'Please upload a PDF file only');
-          return;
-        }
-        
-        // Validate file size (max 5MB)
-        if (file.size && file.size > 5 * 1024 * 1024) {
-          Alert.alert('Error', 'File size must be less than 5MB');
-          return;
-        }
-        
-        setUploadingPO(true);
-        try {
-          // Upload to backend
-          const formData = new FormData();
-          formData.append('poPhoto', {
-            uri: file.uri,
-            type: 'application/pdf',
-            name: file.name || 'po.pdf',
-          } as any);
-          
-          // Store the URI for display
-          setPoPhotoUrl(file.uri);
-          Alert.alert('Success', 'PO document selected');
-        } catch (err: any) {
-          Alert.alert('Error', err.message || 'Failed to process PO document');
-        } finally {
-          setUploadingPO(false);
-        }
-      }
+      if (result.canceled || !result.assets?.length) return;
+      await uploadPoAsset(result.assets[0]);
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to pick document');
+      showError(err.message || 'Failed to pick document');
     }
   };
 
-  const handleTurnToClient = async () => {
-    if (!lead || !user?._id) {
-      Alert.alert('Error', 'User not found. Please login again.');
+  const uploadPoAsset = async (asset: any) => {
+    const name = String(asset.name || 'po.pdf');
+    const nameLooksPdf = name.toLowerCase().endsWith('.pdf');
+    const mime = String(asset.mimeType || asset.type || '');
+    if (mime && mime !== 'application/pdf' && mime !== 'application/octet-stream' && !nameLooksPdf) {
+      showError('Please upload a PDF file only.');
+      return;
+    }
+    if (!nameLooksPdf && mime && mime !== 'application/pdf') {
+      showError('Please upload a PDF file only.');
+      return;
+    }
+    if (asset.size && asset.size > 5 * 1024 * 1024) {
+      showError('File size must be less than 5MB.');
       return;
     }
 
-    const actualProductDetails = productDetails.filter(pd => !pd.isParentRow);
-    
-    if (actualProductDetails.length === 0) {
-      Alert.alert('Error', 'Please add at least one product and set class range to generate rows');
-      return;
-    }
-    
-    const invalidProducts = actualProductDetails.filter(p => !p.product || p.strength == null || p.strength === '' || p.price == null);
-    if (invalidProducts.length > 0) {
-      Alert.alert('Error', 'Please fill in Quantity (Strength) * and Unit Price * for all product rows');
-      return;
-    }
-    
-    if (!form.delivery_date?.trim()) {
-      Alert.alert('Error', 'Delivery date is required');
-      return;
-    }
-    
-    if (!poPhotoUrl || poPhotoUrl.trim() === '') {
-      Alert.alert('Error', 'PO document is required. Please upload a PDF file.');
-      return;
-    }
-    
-    setSubmitting(true);
-    
+    setUploadingPO(true);
+    setFormMessage(null);
     try {
-      const assignedEmployeeId = user._id;
-      // Use loadedAsDcOrder so we never call convert-to-client with a DcOrder id (which would 404). Lead → convert-to-client; DcOrder → PUT dc-orders.
-      const isDcOrder = loadedAsDcOrder;
-      
-      // Per spec: Close (Won) → record moves to My Clients only. Closed Sales happens only after Request DC.
-      if (isDcOrder) {
-        let podProofUrl = poPhotoUrl;
-        if (poPhotoUrl && (poPhotoUrl.startsWith('file://') || !poPhotoUrl.startsWith('http'))) {
+      const formData = new FormData();
+      if (Platform.OS === 'web') {
+        let fileObj: File | Blob | null = asset.file instanceof File ? asset.file : null;
+        if (!fileObj && asset.uri) {
+          const res = await fetch(asset.uri);
+          const blob = await res.blob();
           try {
-            const formData = new FormData();
-            formData.append('poPhoto', { uri: poPhotoUrl, type: 'application/pdf', name: 'po.pdf' } as any);
-            const uploadRes = await apiService.upload('/dc/upload-po', formData);
-            podProofUrl = uploadRes.poPhotoUrl || uploadRes.url || poPhotoUrl;
-          } catch (uploadErr: any) {
-            Alert.alert('Error', uploadErr?.message || 'Failed to upload PO.');
-            setSubmitting(false);
-            return;
+            fileObj = new File([blob], nameLooksPdf ? name : `${name}.pdf`, {
+              type: 'application/pdf',
+            });
+          } catch {
+            fileObj = blob;
           }
         }
-        const updatePayload: any = {
-          school_name: form.school_name || lead?.school_name,
-          contact_person: form.contact_person || lead?.contact_person,
-          contact_mobile: form.contact_mobile || lead?.contact_mobile,
-          email: form.email || lead?.email,
-          contact_person2: form.contact_person2,
-          contact_mobile2: form.contact_mobile2,
-          estimated_delivery_date: new Date(form.delivery_date).toISOString(),
-          assigned_to: assignedEmployeeId,
-          products: actualProductDetails.map(p => ({
-            product_name: p.product,
-            quantity: p.strength,
-            unit_price: p.price,
-          })),
-          status: 'saved',
-        };
-        if (podProofUrl) updatePayload.pod_proof_url = podProofUrl;
-        await apiService.put(`/dc-orders/${id}`, updatePayload);
-        Alert.alert('Success', 'Lead converted to client. You can request DC from My Clients when ready.', [
-          { text: 'OK', onPress: () => navigation.navigate('DCClient') },
-        ]);
-        return;
+        if (!fileObj) {
+          throw new Error('Could not read the selected PDF.');
+        }
+        formData.append('poPhoto', fileObj, nameLooksPdf ? name : 'po.pdf');
+      } else {
+        formData.append('poPhoto', {
+          uri: asset.uri,
+          type: 'application/pdf',
+          name: nameLooksPdf ? name : 'po.pdf',
+        } as any);
       }
-      
-      // Lead: convert to client (DcOrder with status 'saved') — no DC raised yet
+
+      const uploadRes = await apiService.upload('/dc/upload-po', formData);
+      const uploadedUrl = uploadRes.poPhotoUrl || uploadRes.url;
+      if (!uploadedUrl) {
+        throw new Error('Upload succeeded but no file URL was returned');
+      }
+      setPoPhotoUrl(uploadedUrl);
+      showSuccess('PO document uploaded.');
+    } catch (err: any) {
+      setPoPhotoUrl('');
+      showError(err.message || 'Failed to upload PO document');
+    } finally {
+      setUploadingPO(false);
+    }
+  };
+
+  const handleWebPoFile = async (e: any) => {
+    const file = e?.target?.files?.[0];
+    if (!file) return;
+    await uploadPoAsset({
+      file,
+      name: file.name,
+      mimeType: file.type,
+      size: file.size,
+      uri: URL.createObjectURL(file),
+    });
+    e.target.value = '';
+  };
+
+  const proceedWithConversion = async (opts: {
+    schoolName: string;
+    productsPayload: any[];
+    isDcOrder: boolean;
+  }) => {
+    const userId = user?._id || (user as any)?.id;
+    if (!lead || !userId) {
+      showError('User not found. Please login again.');
+      return;
+    }
+
+    const isLocalFileUri = (uri: string) =>
+      /^(file|content|ph|assets-library):\/\//i.test(uri);
+
+    setSubmitting(true);
+    try {
       let podProofUrl = poPhotoUrl;
-      if (poPhotoUrl && (poPhotoUrl.startsWith('file://') || !poPhotoUrl.startsWith('http'))) {
+      if (isLocalFileUri(poPhotoUrl)) {
         try {
           const formData = new FormData();
           formData.append('poPhoto', {
@@ -521,39 +367,177 @@ export default function LeadCloseScreen({ navigation, route }: any) {
           const uploadRes = await apiService.upload('/dc/upload-po', formData);
           podProofUrl = uploadRes.poPhotoUrl || uploadRes.url || poPhotoUrl;
         } catch (uploadErr: any) {
-          Alert.alert('Error', uploadErr?.message || 'Failed to upload PO. Please try again.');
+          showError(uploadErr?.message || 'Failed to upload PO. Please try again.');
           setSubmitting(false);
           return;
         }
       }
-      
-      const productsPayload = actualProductDetails.map(p => ({
+
+      if (opts.isDcOrder) {
+        const updatePayload: any = {
+          school_name: opts.schoolName,
+          contact_person: form.contact_person || lead?.contact_person,
+          contact_mobile: form.contact_mobile || lead?.contact_mobile,
+          email: form.email || lead?.email,
+          contact_person2: form.contact_person2,
+          contact_mobile2: form.contact_mobile2,
+          estimated_delivery_date: new Date(form.delivery_date).toISOString(),
+          assigned_to: userId,
+          products: opts.productsPayload,
+          status: 'saved',
+        };
+        if (podProofUrl) updatePayload.pod_proof_url = podProofUrl;
+        await apiService.put(`/dc-orders/${id}`, updatePayload);
+      } else {
+        await apiService.post(`/leads/${id}/convert-to-client`, {
+          school_name: opts.schoolName,
+          contact_person: form.contact_person || lead?.contact_person,
+          contact_mobile: form.contact_mobile || lead?.contact_mobile,
+          email: form.email || lead?.email,
+          contact_person2: form.contact_person2,
+          contact_mobile2: form.contact_mobile2,
+          zone: lead?.zone,
+          school_type: lead?.school_type,
+          estimated_delivery_date: form.delivery_date
+            ? new Date(form.delivery_date).toISOString()
+            : undefined,
+          products: opts.productsPayload,
+          pod_proof_url: podProofUrl,
+        });
+      }
+
+      showSuccess('Lead converted to client. Opening My Clients…');
+      navigateRoot('DCClient');
+    } catch (err: any) {
+      showError(err.message || 'Failed to convert lead to client');
+    } finally {
+      setSubmitting(false);
+      setPendingConvert(null);
+      setSplitPreview(null);
+      setSplitModalOpen(false);
+    }
+  };
+
+  const handleSplitConfirm = async () => {
+    if (!pendingConvert) return;
+    setSplitModalOpen(false);
+    await proceedWithConversion(pendingConvert);
+  };
+
+  const handleSplitCancel = () => {
+    setSplitModalOpen(false);
+    setSplitPreview(null);
+    setPendingConvert(null);
+    setSubmitting(false);
+  };
+
+  const handleTurnToClient = async () => {
+    setFormMessage(null);
+    const userId = user?._id || (user as any)?.id;
+    if (!lead || !userId) {
+      showError('User not found. Please login again.');
+      return;
+    }
+
+    const schoolName = (form.school_name || lead?.school_name || '').trim();
+    if (!schoolName) {
+      showError('School name is required.');
+      return;
+    }
+
+    const actualProductDetails = productDetails.filter((pd) => !pd.isParentRow);
+
+    if (actualProductDetails.length === 0) {
+      showError('Add at least one product (tap ADD PRODUCTS) with class, quantity, and price.');
+      return;
+    }
+
+    const invalidProducts = actualProductDetails.filter(
+      (p) =>
+        !p.product ||
+        p.strength == null ||
+        p.strength === '' ||
+        Number(p.strength) <= 0 ||
+        p.price == null ||
+        p.price === '' ||
+        Number(p.price) <= 0,
+    );
+    if (invalidProducts.length > 0) {
+      showError(
+        'Each product needs Quantity (Strength) and Unit Price greater than 0. Open ADD PRODUCTS and fill those fields.',
+      );
+      return;
+    }
+
+    if (!form.delivery_date?.trim()) {
+      showError('Delivery date is required. Pick a date above.');
+      return;
+    }
+
+    if (!poPhotoUrl || poPhotoUrl.trim() === '') {
+      showError('PO document is required. Upload a PDF with the blue button above.');
+      return;
+    }
+
+    const withTerms = assignTermsByLevelCombination(
+      actualProductDetails.map((p) => ({
         product_name: p.product,
         quantity: Number(p.strength) || 1,
         unit_price: Number(p.price) || 0,
-      }));
-      await apiService.post(`/leads/${id}/convert-to-client`, {
-        school_name: form.school_name || lead?.school_name,
-        contact_person: form.contact_person || lead?.contact_person,
-        contact_mobile: form.contact_mobile || lead?.contact_mobile,
-        email: form.email || lead?.email,
-        contact_person2: form.contact_person2,
-        contact_mobile2: form.contact_mobile2,
-        zone: lead?.zone,
-        school_type: lead?.school_type,
-        estimated_delivery_date: form.delivery_date ? new Date(form.delivery_date).toISOString() : undefined,
-        products: productsPayload,
-        pod_proof_url: podProofUrl,
+        strength: Number(p.strength) || 0,
+        class: String(p.class || ''),
+        level: p.level || undefined,
+        specs: p.specs || undefined,
+        subject: p.subject || undefined,
+        deliverables: p.deliverables?.length ? p.deliverables : undefined,
+        productCategory: p.category || undefined,
+        term: p.term || 'Term 1',
+        product: p.product,
+      })),
+    );
+
+    const productsPayload = withTerms.map((p) => ({
+      product_name: p.product_name || p.product,
+      quantity: Number(p.quantity) || Number(p.strength) || 1,
+      unit_price: Number(p.unit_price) || 0,
+      strength: Number(p.strength) || Number(p.quantity) || 0,
+      class: p.class,
+      level: p.level,
+      specs: p.specs,
+      subject: p.subject,
+      deliverables: p.deliverables,
+      productCategory: p.productCategory,
+      term: p.term || 'Term 1',
+    }));
+
+    const term1Items = withTerms.filter(
+      (p) => (p.term || 'Term 1') === 'Term 1' || (p.term || 'Term 1') === 'Both',
+    );
+    const term2Items = withTerms.filter((p) => (p.term || 'Term 1') === 'Term 2');
+
+    const convertOpts = {
+      schoolName,
+      productsPayload,
+      isDcOrder: loadedAsDcOrder,
+    };
+
+    if (term1Items.length > 0 && term2Items.length > 0) {
+      setPendingConvert(convertOpts);
+      setSplitPreview({
+        term1: term1Items.map((p) => ({
+          productName: formatProductWithLevel(String(p.product_name || p.product || ''), p.level),
+          strength: Number(p.strength) || Number(p.quantity) || 0,
+        })),
+        term2: term2Items.map((p) => ({
+          productName: formatProductWithLevel(String(p.product_name || p.product || ''), p.level),
+          strength: Number(p.strength) || Number(p.quantity) || 0,
+        })),
       });
-      
-      Alert.alert('Success', 'Lead converted to client. You can request DC from My Clients when ready.', [
-        { text: 'OK', onPress: () => navigation.navigate('DCClient') },
-      ]);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to convert lead to client');
-    } finally {
-      setSubmitting(false);
+      setSplitModalOpen(true);
+      return;
     }
+
+    await proceedWithConversion(convertOpts);
   };
 
   if (loading) {
@@ -568,19 +552,39 @@ export default function LeadCloseScreen({ navigation, route }: any) {
   const actualProductDetails = productDetails.filter(pd => !pd.isParentRow);
 
   return (
-    <ScreenShell
-      title="Close Lead"
-      loading={loading}
-    >
-<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        <FormField label="School Name *" value={form.school_name} onChangeText={(text: string) => setForm({ ...form, school_name: text })} placeholder="Enter school name" />
-        <FormField label="Person 1 *" value={form.contact_person} onChangeText={(text: string) => setForm({ ...form, contact_person: text })} placeholder="Enter contact person" />
-        <FormField label="Email 1" value={form.email} onChangeText={(text: string) => setForm({ ...form, email: text })} placeholder="Enter email" keyboardType="email-address" />
-        <FormField label="Mob 1 *" value={form.contact_mobile} onChangeText={(text: string) => setForm({ ...form, contact_mobile: text })} placeholder="Enter mobile" keyboardType="phone-pad" />
-        <FormField label="Decision Maker" value={form.contact_person2} onChangeText={(text: string) => setForm({ ...form, contact_person2: text })} placeholder="Enter decision maker name" />
-        <FormField label="Email" value={form.contact_mobile2} onChangeText={(text: string) => setForm({ ...form, contact_mobile2: text })} placeholder="Enter decision maker email" keyboardType="email-address" />
-        <View style={styles.fieldContainer}>
-          <Text style={styles.label}>Delivery Date *</Text>
+    <ScreenShell title="Close Lead">
+      {formMessage ? (
+        <MessageBanner
+          type={formMessageType}
+          message={formMessage}
+          onDismiss={() => setFormMessage(null)}
+        />
+      ) : null}
+
+      <FormField label="School Name *" value={form.school_name} onChangeText={(text: string) => setForm({ ...form, school_name: text })} placeholder="Enter school name" />
+      <FormField label="Person 1 *" value={form.contact_person} onChangeText={(text: string) => setForm({ ...form, contact_person: text })} placeholder="Enter contact person" />
+      <FormField label="Email 1" value={form.email} onChangeText={(text: string) => setForm({ ...form, email: text })} placeholder="Enter email" keyboardType="email-address" />
+      <FormField label="Mob 1 *" value={form.contact_mobile} onChangeText={(text: string) => setForm({ ...form, contact_mobile: text })} placeholder="Enter mobile" keyboardType="phone-pad" />
+      <FormField label="Decision Maker" value={form.contact_person2} onChangeText={(text: string) => setForm({ ...form, contact_person2: text })} placeholder="Enter decision maker name" />
+      <FormField label="Email" value={form.contact_mobile2} onChangeText={(text: string) => setForm({ ...form, contact_mobile2: text })} placeholder="Enter decision maker email" keyboardType="email-address" />
+      <View style={styles.fieldContainer}>
+        <Text style={styles.label}>Delivery Date *</Text>
+        {Platform.OS === 'web' ? (
+          React.createElement('input', {
+            type: 'date',
+            value: form.delivery_date || '',
+            min: todayYmd(),
+            onChange: (e: any) => setForm((f) => ({ ...f, delivery_date: e.target.value })),
+            style: {
+              width: '100%',
+              padding: 14,
+              borderRadius: 12,
+              border: '1px solid #E2E8F0',
+              fontSize: 16,
+              backgroundColor: '#fff',
+            },
+          })
+        ) : (
           <TouchableOpacity
             style={styles.dateTouchable}
             onPress={() => setShowDeliveryDatePicker(true)}
@@ -591,7 +595,8 @@ export default function LeadCloseScreen({ navigation, route }: any) {
             </Text>
             <Text style={styles.dateCalendarIcon}>📅</Text>
           </TouchableOpacity>
-        </View>
+        )}
+      </View>
         {showDeliveryDatePicker && (
           <Modal visible transparent animationType="slide">
             <TouchableOpacity
@@ -652,6 +657,26 @@ export default function LeadCloseScreen({ navigation, route }: any) {
                 <Text style={styles.removePhotoText}>Remove</Text>
               </TouchableOpacity>
             </View>
+          ) : Platform.OS === 'web' ? (
+            <View>
+              {React.createElement('input', {
+                type: 'file',
+                accept: 'application/pdf,.pdf',
+                disabled: uploadingPO,
+                onChange: handleWebPoFile,
+                style: {
+                  width: '100%',
+                  padding: 12,
+                  borderRadius: 12,
+                  border: '1px solid #E2E8F0',
+                  backgroundColor: '#fff',
+                  fontSize: 15,
+                },
+              })}
+              <Text style={{ marginTop: 6, fontSize: 12, color: colors.textSecondary }}>
+                {uploadingPO ? 'Uploading…' : 'PDF only, max 5MB'}
+              </Text>
+            </View>
           ) : (
             <TouchableOpacity style={styles.uploadButton} onPress={pickPOPhoto} disabled={uploadingPO}>
               <Text style={styles.uploadButtonText}>{uploadingPO ? 'Uploading...' : '📄 Upload PO Document (PDF)'}</Text>
@@ -660,352 +685,167 @@ export default function LeadCloseScreen({ navigation, route }: any) {
         </View>
 
         <TouchableOpacity style={styles.addProductsButton} onPress={() => setShowProductModal(true)}>
-          <Text style={styles.addProductsButtonText}>📦 ADD PRODUCTS {actualProductDetails.length > 0 && `(${actualProductDetails.length})`}</Text>
+          <Text style={styles.addProductsButtonText}>
+            📦 ADD PRODUCTS {actualProductDetails.length > 0 && `(${actualProductDetails.length})`}
+          </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.submitButton, submitting && styles.submitButtonDisabled]} 
-          onPress={handleTurnToClient} 
-          disabled={submitting}
-        >
-          </TouchableOpacity>
-      </ScrollView>
-
-      {/* Product Selection Modal */}
-      <Modal visible={showProductModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Products & Details</Text>
-              <TouchableOpacity onPress={() => setShowProductModal(false)}>
-                <Text style={styles.modalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            
-            <ScrollView style={styles.modalBody}>
-              {/* Product Selection */}
-              <View style={styles.productSelectionContainer}>
-                <Text style={styles.sectionTitle}>Add Products</Text>
-                {loadingProducts ? (
-                  <View style={styles.productsLoadingContainer}>
-                    <ActivityIndicator size="small" color={colors.primary} />
-                    <Text style={styles.productsLoadingText}>Loading products...</Text>
-                  </View>
-                ) : products.length === 0 ? (
-                  <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyIcon}>📦</Text>
-                    <Text style={styles.emptyText}>No products available</Text>
-                    <Text style={styles.emptySubtext}>Please contact admin to add products</Text>
-                    <TouchableOpacity style={styles.refreshButton} onPress={loadProducts}>
-                      <Text style={styles.refreshButtonText}>🔄 Refresh</Text>
+        {actualProductDetails.length > 0 ? (
+          <View style={styles.productDetailsCard}>
+            <Text style={styles.productDetailsTitle}>Product Details</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator>
+              <View>
+                <View style={styles.productDetailsHeaderRow}>
+                  <Text style={[styles.pdCol, styles.pdColProduct, styles.pdHeader]}>Product</Text>
+                  <Text style={[styles.pdCol, styles.pdColLevel, styles.pdHeader]}>Level</Text>
+                  <Text style={[styles.pdCol, styles.pdColClass, styles.pdHeader]}>Class</Text>
+                  <Text style={[styles.pdCol, styles.pdColCat, styles.pdHeader]}>
+                    Product Category
+                  </Text>
+                  <Text style={[styles.pdCol, styles.pdColSpecs, styles.pdHeader]}>Specs</Text>
+                  <Text style={[styles.pdCol, styles.pdColQty, styles.pdHeader]}>
+                    Quantity (Strength) *
+                  </Text>
+                  <Text style={[styles.pdCol, styles.pdColAction, styles.pdHeader]}>Action</Text>
+                </View>
+                {actualProductDetails.map((pd) => {
+                  const categoryOptions = getCategoriesForProduct(products, pd.product);
+                  return (
+                  <View key={pd.id} style={styles.productDetailsRow}>
+                    <Text style={[styles.pdCol, styles.pdColProduct]} numberOfLines={1}>
+                      {pd.product}
+                    </Text>
+                    <Text style={[styles.pdCol, styles.pdColLevel]}>{pd.level || '—'}</Text>
+                    <Text style={[styles.pdCol, styles.pdColClass]}>{pd.class || '—'}</Text>
+                    <View style={[styles.pdCol, styles.pdColCat]}>
+                      {categoryOptions.length > 0 ? (
+                        <WebSelect
+                          value={pd.category || ''}
+                          onValueChange={(v) =>
+                            setProductDetails((prev) =>
+                              prev.map((r) =>
+                                r.id === pd.id ? { ...r, category: v } : r,
+                              ),
+                            )
+                          }
+                          items={categoryOptions.map((c) => ({ label: c, value: c }))}
+                          placeholder="Select category"
+                        />
+                      ) : (
+                        <Text style={styles.pdPlain} numberOfLines={1}>
+                          {pd.category || '—'}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={[styles.pdCol, styles.pdColSpecs]} numberOfLines={1}>
+                      {pd.specs || '—'}
+                    </Text>
+                    <Text style={[styles.pdCol, styles.pdColQty]}>{pd.strength}</Text>
+                    <TouchableOpacity
+                      style={styles.pdColAction}
+                      onPress={() =>
+                        setProductDetails((prev) => prev.filter((r) => r.id !== pd.id))
+                      }
+                    >
+                      <Text style={styles.pdRemove}>✕</Text>
                     </TouchableOpacity>
                   </View>
-                ) : (
-                  <ScrollView style={styles.productList}>
-                    {products.map((product: any) => {
-                      const productName = product.productName || product.name || product.product || 'Unknown';
-                      return (
-                        <TouchableOpacity
-                          key={product._id || product.id || productName}
-                          style={styles.productItem}
-                          onPress={() => addProductWithSpec(productName)}
-                        >
-                          <Text style={styles.productItemText}>{productName}</Text>
-                          <Text style={styles.productItemAdd}>+ Add</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                )}
+                  );
+                })}
+                <View style={[styles.productDetailsRow, styles.productDetailsTotalRow]}>
+                  <Text style={[styles.pdCol, styles.pdColProduct, styles.pdHeader]}>Total:</Text>
+                  <Text style={[styles.pdCol, styles.pdColLevel]} />
+                  <Text style={[styles.pdCol, styles.pdColClass]} />
+                  <Text style={[styles.pdCol, styles.pdColCat]} />
+                  <Text style={[styles.pdCol, styles.pdColSpecs]} />
+                  <Text style={[styles.pdCol, styles.pdColQty, styles.pdHeader]}>
+                    {actualProductDetails.reduce((s, p) => s + (Number(p.strength) || 0), 0)}
+                  </Text>
+                  <Text style={[styles.pdCol, styles.pdColAction, styles.pdHeader]}>
+                    ₹
+                    {actualProductDetails
+                      .reduce(
+                        (s, p) =>
+                          s + (Number(p.total) || Number(p.strength) * Number(p.price) || 0),
+                        0,
+                      )
+                      .toLocaleString('en-IN', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                  </Text>
+                </View>
               </View>
-
-              {/* Product Range Configuration */}
-              {productDetails.filter(pd => pd.isParentRow).length > 0 && (
-                <View style={styles.rangeConfigContainer}>
-                  <Text style={styles.sectionTitle}>Set Class Range for Products</Text>
-                  {productDetails
-                    .filter(pd => pd.isParentRow)
-                    .map((pd) => {
-                      const productSubjects = getProductSubjects(pd.product);
-                      const hasSubjects = hasProductSubjects(pd.product);
-                      const selectedSubjects = pd.selectedSubjects || [];
-                      const productSpecs = getProductSpecs(pd.product);
-                      const selectedSpecs = pd.selectedSpecs || productSpecs;
-                      
-                      return (
-                        <View key={pd.id} style={styles.parentRowContainer}>
-                          <View style={styles.parentRowHeader}>
-                            <Text style={styles.parentRowProduct}>{pd.product}</Text>
-                            <TouchableOpacity onPress={() => removeProductDetail(pd.id)}>
-                              <Text style={styles.removeButton}>✕</Text>
-                            </TouchableOpacity>
-                          </View>
-                          
-                          <View style={styles.rangeControls}>
-                            <View style={styles.rangeControl}>
-                              <Text style={styles.rangeLabel}>From:</Text>
-                              <TouchableOpacity
-                                style={styles.dropdownButton}
-                                onPress={() => {
-                                  setPickingFor({ id: pd.id, field: 'fromClass' });
-                                  setShowClassPicker(true);
-                                }}
-                              >
-                                <Text style={styles.dropdownButtonText}>{pd.fromClass || '1'}</Text>
-                                <Text style={styles.dropdownArrow}>▼</Text>
-                              </TouchableOpacity>
-                            </View>
-                            
-                            <View style={styles.rangeControl}>
-                              <Text style={styles.rangeLabel}>To:</Text>
-                              <TouchableOpacity
-                                style={styles.dropdownButton}
-                                onPress={() => {
-                                  setPickingFor({ id: pd.id, field: 'toClass' });
-                                  setShowClassPicker(true);
-                                }}
-                              >
-                                <Text style={styles.dropdownButtonText}>{pd.toClass || '10'}</Text>
-                                <Text style={styles.dropdownArrow}>▼</Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-
-                          <View style={styles.subjectsContainer}>
-                            <Text style={styles.subjectsLabel}>Select Specs:</Text>
-                            <View style={styles.checkboxList}>
-                              {productSpecs && productSpecs.length > 0 ? (
-                                productSpecs.map((spec) => {
-                                  const isSelected = selectedSpecs.includes(spec);
-                                  return (
-                                    <TouchableOpacity
-                                      key={spec}
-                                      style={styles.checkboxItem}
-                                      onPress={() => {
-                                        const newSpecs = isSelected
-                                          ? selectedSpecs.filter(s => s !== spec)
-                                          : [...selectedSpecs, spec];
-                                        updateProductDetail(pd.id, 'selectedSpecs', newSpecs);
-                                      }}
-                                      activeOpacity={0.7}
-                                    >
-                                      <View style={[
-                                        styles.checkbox,
-                                        isSelected && styles.checkboxSelected
-                                      ]}>
-                                        {isSelected && (
-                                          <Text style={styles.checkboxCheck}>✓</Text>
-                                        )}
-                                      </View>
-                                      <Text style={styles.checkboxLabel}>{spec}</Text>
-                                    </TouchableOpacity>
-                                  );
-                                })
-                              ) : (
-                                <Text style={styles.emptyText}>No specs available</Text>
-                              )}
-                            </View>
-                          </View>
-
-                          {hasSubjects && productSubjects.length > 0 && (
-                            <View style={styles.subjectsContainer}>
-                              <Text style={styles.subjectsLabel}>Select Subjects:</Text>
-                              <View style={styles.subjectsList}>
-                                {productSubjects.map((subject) => (
-                                  <TouchableOpacity
-                                    key={subject}
-                                    style={[
-                                      styles.subjectChip,
-                                      selectedSubjects.includes(subject) && styles.subjectChipSelected
-                                    ]}
-                                    onPress={() => {
-                                      const newSubjects = selectedSubjects.includes(subject)
-                                        ? selectedSubjects.filter(s => s !== subject)
-                                        : [...selectedSubjects, subject];
-                                      updateProductDetail(pd.id, 'selectedSubjects', newSubjects);
-                                    }}
-                                  >
-                                    <Text style={[
-                                      styles.subjectChipText,
-                                      selectedSubjects.includes(subject) && styles.subjectChipTextSelected
-                                    ]}>
-                                      {subject}
-                                    </Text>
-                                  </TouchableOpacity>
-                                ))}
-                              </View>
-                            </View>
-                          )}
-                        </View>
-                      );
-                    })}
-                </View>
-              )}
-
-              {/* Product Details Table */}
-              {actualProductDetails.length > 0 && (
-                <View style={styles.detailsTableContainer}>
-                  <Text style={styles.sectionTitle}>Product Details ({actualProductDetails.length} rows)</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={true}>
-                    <View style={styles.tableWrapper}>
-                      <View style={styles.tableHeader}>
-                        <Text style={[styles.tableHeaderText, styles.colProduct]}>Product</Text>
-                        <Text style={[styles.tableHeaderText, styles.colClass]}>Class</Text>
-                        <Text style={[styles.tableHeaderText, styles.colCategory]}>Category</Text>
-                        <Text style={[styles.tableHeaderText, styles.colSpecs]}>Specs</Text>
-                        <Text style={[styles.tableHeaderText, styles.colSubject]}>Subject</Text>
-                        <Text style={[styles.tableHeaderText, styles.colStrength]}>Quantity (Strength) *</Text>
-                        <Text style={[styles.tableHeaderText, styles.colPrice]}>Unit Price *</Text>
-                        <Text style={[styles.tableHeaderText, styles.colTotal]}>Total</Text>
-                        <Text style={[styles.tableHeaderText, styles.colLevel]}>Level</Text>
-                        <Text style={[styles.tableHeaderText, styles.colTerm]}>Term</Text>
-                        <Text style={[styles.tableHeaderText, styles.colAction]}>Action</Text>
-                      </View>
-                      {actualProductDetails.map((pd) => (
-                        <View key={pd.id} style={styles.tableRow}>
-                          <Text style={[styles.tableCell, styles.colProduct]} numberOfLines={1}>{pd.product}</Text>
-                          <Text style={[styles.tableCell, styles.colClass]}>{pd.class}</Text>
-                          <View style={[styles.tableCell, styles.tdPickerWrap, styles.colCategory]}>
-                            <Picker
-                              selectedValue={pd.category}
-                              onValueChange={(v) => updateProductDetail(pd.id, 'category', v)}
-                              style={styles.tablePicker}
-                              color="#111827"
-                            >
-                              {availableCategories.map(c => (
-                                <Picker.Item key={c} label={c} value={c} />
-                              ))}
-                            </Picker>
-                          </View>
-                          <Text style={[styles.tableCell, styles.colSpecs]} numberOfLines={1}>{pd.specs}</Text>
-                          <Text style={[styles.tableCell, styles.colSubject]} numberOfLines={1}>{pd.subject || '-'}</Text>
-                          <WebInput
-                            style={[styles.tableInput, styles.colStrength]}
-                            value={pd.strength.toString()}
-                            onChangeText={(text) => updateProductDetail(pd.id, 'strength', Number(text) || 0)}
-                            keyboardType="numeric"
-                            placeholder="0"
-                          />
-                          <WebInput
-                            style={[styles.tableInput, styles.colPrice]}
-                            value={pd.price.toString()}
-                            onChangeText={(text) => updateProductDetail(pd.id, 'price', Number(text) || 0)}
-                            keyboardType="numeric"
-                            placeholder="0"
-                          />
-                          <Text style={[styles.tableCell, styles.colTotal]}>{pd.total ?? (Number(pd.strength) || 0) * (Number(pd.price) || 0)}</Text>
-                          <View style={[styles.tableCell, styles.tdPickerWrap, styles.colLevel]}>
-                            <Picker
-                              selectedValue={pd.level}
-                              onValueChange={(v) => updateProductDetail(pd.id, 'level', v)}
-                              style={styles.tablePicker}
-                              color="#111827"
-                            >
-                              {getProductLevels(pd.product).map(l => (
-                                <Picker.Item key={l} label={l} value={l} />
-                              ))}
-                            </Picker>
-                          </View>
-                          <View style={[styles.tableCell, styles.tdPickerWrap, styles.colTerm]}>
-                            <Picker
-                              selectedValue={pd.term || 'Term 1'}
-                              onValueChange={(v) => updateProductDetail(pd.id, 'term', v)}
-                              style={styles.tablePicker}
-                              color="#111827"
-                            >
-                              {TERM_OPTIONS.map(t => (
-                                <Picker.Item key={t} label={t} value={t} />
-                              ))}
-                            </Picker>
-                          </View>
-                          <View style={[styles.tableCell, styles.colAction]}>
-                            <TouchableOpacity onPress={() => removeProductDetail(pd.id)}>
-                              <Text style={styles.removeButton}>✕</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ))}
-                      <View style={styles.tableFooter}>
-                        <View style={styles.tableFooterRow}>
-                          <Text style={styles.tableFooterLabel}>Total Strength:</Text>
-                          <Text style={styles.tableFooterValue}>
-                            {actualProductDetails.reduce((sum, pd) => sum + (Number(pd.strength) || 0), 0)}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  </ScrollView>
-                </View>
-              )}
             </ScrollView>
-            
-            <View style={styles.modalFooter}>
-              <TouchableOpacity style={styles.modalButton} onPress={() => setShowProductModal(false)}>
-                <Text style={styles.modalButtonText}>Done ({actualProductDetails.length} products)</Text>
-              </TouchableOpacity>
-            </View>
           </View>
-        </View>
-      </Modal>
+        ) : null}
 
-      {/* Class Picker Dropdown Modal */}
-      <Modal visible={showClassPicker} transparent animationType="fade" onRequestClose={() => setShowClassPicker(false)}>
-        <View style={styles.classPickerOverlay}>
-          <TouchableOpacity 
-            style={styles.classPickerOverlayTouchable}
-            activeOpacity={1}
-            onPress={() => {
-              setShowClassPicker(false);
-              setPickingFor(null);
-            }}
-          />
-          <View style={styles.classPickerContainer}>
-            <View style={styles.classPickerHeader}>
-              <Text style={styles.classPickerTitle}>
-                Select {pickingFor?.field === 'fromClass' ? 'From' : 'To'} Class
-              </Text>
-              <TouchableOpacity onPress={() => {
-                setShowClassPicker(false);
-                setPickingFor(null);
-              }}>
-                <Text style={styles.classPickerClose}>✕</Text>
+        <TouchableOpacity
+          style={[styles.turnToClientButton, submitting && styles.submitButtonDisabled]}
+          onPress={handleTurnToClient}
+          disabled={submitting}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.turnToClientButtonText}>
+            {submitting ? 'Processing…' : '👤 Turn Lead to Client'}
+          </Text>
+        </TouchableOpacity>
+
+      <CloseLeadProductsModal
+        visible={showProductModal}
+        onClose={() => setShowProductModal(false)}
+        catalogProducts={products}
+        loadingProducts={loadingProducts}
+        onRefreshProducts={loadProducts}
+        onDone={(rows) => setProductDetails(rows)}
+      />
+
+      <Modal visible={splitModalOpen} transparent animationType="fade">
+        <View style={styles.splitOverlay}>
+          <View style={styles.splitCard}>
+            <Text style={styles.splitTitle}>This lead will be split into 2 DCs</Text>
+            <Text style={styles.splitSubtitle}>
+              Review how products will be divided before confirming.
+            </Text>
+
+            <View style={styles.splitBlock}>
+              <Text style={styles.splitBlockTitleTerm1}>DC 1 – My Clients (Term 1)</Text>
+              {(splitPreview?.term1 || []).map((p, i) => (
+                <View key={`t1-${i}`} style={styles.splitRow}>
+                  <Text style={styles.splitProduct}>• {p.productName}</Text>
+                  <Text style={styles.splitQty}>Qty: {p.strength}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.splitBlock}>
+              <Text style={styles.splitBlockTitleTerm2}>DC 2 – Term Wise DC (Term 2)</Text>
+              {(splitPreview?.term2 || []).map((p, i) => (
+                <View key={`t2-${i}`} style={styles.splitRow}>
+                  <Text style={styles.splitProduct}>• {p.productName}</Text>
+                  <Text style={styles.splitQty}>Qty: {p.strength}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.splitFooter}>
+              <TouchableOpacity
+                style={styles.splitCancelBtn}
+                onPress={handleSplitCancel}
+                disabled={submitting}
+              >
+                <Text style={styles.splitCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.splitConfirmBtn, submitting && styles.submitButtonDisabled]}
+                onPress={handleSplitConfirm}
+                disabled={submitting}
+              >
+                <Text style={styles.splitConfirmText}>
+                  {submitting ? 'Submitting…' : 'Confirm & Submit'}
+                </Text>
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.classPickerList} showsVerticalScrollIndicator={true}>
-              {availableClasses.map((classNum) => {
-                const currentValue = pickingFor?.field === 'fromClass' 
-                  ? productDetails.find(p => p.id === pickingFor?.id)?.fromClass
-                  : productDetails.find(p => p.id === pickingFor?.id)?.toClass;
-                const isSelected = currentValue === classNum;
-                
-                return (
-                  <TouchableOpacity
-                    key={classNum}
-                    style={[styles.classPickerItem, isSelected && styles.classPickerItemSelected]}
-                    onPress={() => {
-                      if (pickingFor) {
-                        console.log('Selecting class:', classNum, 'for', pickingFor.field, 'of product', pickingFor.id);
-                        // Update immediately using the updateProductDetail function
-                        updateProductDetail(pickingFor.id, pickingFor.field, classNum);
-                      }
-                      // Close modal after a small delay to ensure state updates
-                      setTimeout(() => {
-                        setShowClassPicker(false);
-                        setPickingFor(null);
-                      }, 100);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.classPickerItemText, isSelected && styles.classPickerItemTextSelected]}>
-                      Class {classNum}
-                    </Text>
-                    {isSelected && (
-                      <Text style={styles.classPickerCheck}>✓</Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1083,8 +923,61 @@ const styles = StyleSheet.create({
   poPhoto: { width: 80, height: 80, borderRadius: 8, marginRight: 12 },
   removePhotoButton: { backgroundColor: colors.error, borderRadius: 8, padding: 8 },
   removePhotoText: { ...typography.body.small, color: colors.textLight },
-  addProductsButton: { backgroundColor: colors.info, borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 20 },
+  addProductsButton: { backgroundColor: colors.info, borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 12 },
   addProductsButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
+  productDetailsCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    backgroundColor: colors.backgroundLight,
+  },
+  productDetailsTitle: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    marginBottom: 10,
+  },
+  productDetailsHeaderRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingBottom: 6,
+    marginBottom: 4,
+    backgroundColor: '#F1F5F9',
+  },
+  productDetailsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  productDetailsTotalRow: {
+    borderBottomWidth: 0,
+    backgroundColor: '#F1F5F9',
+    marginTop: 4,
+    borderRadius: 8,
+  },
+  pdCol: { ...typography.body.small, color: colors.textPrimary, paddingHorizontal: 4 },
+  pdHeader: { fontWeight: '700', color: colors.textSecondary },
+  pdColProduct: { width: 90 },
+  pdColLevel: { width: 50, textAlign: 'center' },
+  pdColClass: { width: 44, textAlign: 'center' },
+  pdColCat: { width: 150 },
+  pdPlain: { ...typography.body.small, color: colors.textPrimary },
+  pdColSpecs: { width: 90 },
+  pdColQty: { width: 100, textAlign: 'center' },
+  pdColAction: { width: 80, alignItems: 'center', justifyContent: 'center' },
+  pdRemove: { color: colors.error, fontSize: 16, fontWeight: '700' },
+  turnToClientButton: {
+    backgroundColor: colors.info,
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginBottom: 28,
+  },
+  turnToClientButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '700' },
   submitButton: { marginTop: 24, borderRadius: 12, overflow: 'hidden' },
   submitButtonDisabled: { opacity: 0.6 },
   submitButtonGradient: { paddingVertical: 16, alignItems: 'center' },
@@ -1209,4 +1102,64 @@ const styles = StyleSheet.create({
   tableFooterLabel: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '600' },
   tableFooterValue: { ...typography.body.medium, color: colors.primary, fontWeight: '600' },
   removeButton: { fontSize: 18, color: colors.error, fontWeight: 'bold' },
+  splitOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  splitCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 16,
+    padding: 20,
+  },
+  splitTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 6 },
+  splitSubtitle: { ...typography.body.small, color: colors.textSecondary, marginBottom: 16 },
+  splitBlock: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+  },
+  splitBlockTitleTerm1: {
+    ...typography.body.medium,
+    color: '#15803d',
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  splitBlockTitleTerm2: {
+    ...typography.body.medium,
+    color: '#1d4ed8',
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  splitRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  splitProduct: { ...typography.body.small, color: colors.textSecondary, flex: 1, paddingRight: 8 },
+  splitQty: { ...typography.body.small, color: colors.textSecondary },
+  splitFooter: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8, gap: 10 },
+  splitCancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundLight,
+  },
+  splitCancelText: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '600' },
+  splitConfirmBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+  },
+  splitConfirmText: { ...typography.body.medium, color: colors.textLight, fontWeight: '700' },
 });

@@ -41,7 +41,7 @@ export default function DCHubScreen() {
 
   return (
     <ScreenShell title="Deal Conversion" subtitle="DC pipeline overview" loading={loading}>
-      <WebButton title="Create Sale" onPress={() => navigateRoot('DCCreate')} />
+      <WebButton title="Create Sale" onPress={() => navigateRoot('DCCreateSale')} />
       <PageSection title="Status summary">
         <View style={styles.grid}>
           {tiles.map((t) => (

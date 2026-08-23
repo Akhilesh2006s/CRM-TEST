@@ -1,21 +1,24 @@
-/** CRM dashboard palette — aligned with navbar-landing app/globals.css */
+/** CRM mobile light palette — aligned with web app/globals.css soft sky theme */
 export const colors = {
-  primary: '#16A34A',
-  primaryDark: '#15803D',
-  primaryLight: '#22C55E',
-  primaryForeground: '#FAFAFA',
+  /* Soft sky accent (readable on light surfaces) */
+  primary: '#3B82F6',
+  primaryDark: '#2563EB',
+  primaryLight: '#60A5FA',
+  primaryForeground: '#FFFFFF',
 
-  accent: '#F5F5F5',
-  accentForeground: '#171717',
+  accent: '#EFF6FF',
+  accentForeground: '#1E3A5F',
 
-  background: '#FAFAFA',
+  background: '#F8FAFC',
   backgroundLight: '#FFFFFF',
-  backgroundMuted: '#F5F5F5',
+  backgroundMuted: '#F1F5F9',
+  /* Alias for screens that still reference backgroundDark */
+  backgroundDark: '#F1F5F9',
 
-  textPrimary: '#171717',
-  textSecondary: '#525252',
-  textTertiary: '#737373',
-  textMuted: '#A3A3A3',
+  textPrimary: '#1E293B',
+  textSecondary: '#475569',
+  textTertiary: '#64748B',
+  textMuted: '#94A3B8',
   textLight: '#FFFFFF',
 
   success: '#16A34A',
@@ -24,15 +27,15 @@ export const colors = {
   warningLight: '#FEF9C3',
   error: '#DC2626',
   errorLight: '#FEE2E2',
-  info: '#2563EB',
+  info: '#3B82F6',
   infoLight: '#DBEAFE',
 
-  border: '#E5E5E5',
-  borderLight: '#F5F5F5',
+  border: '#E2E8F0',
+  borderLight: '#F1F5F9',
 
-  tableHeader: '#F5F5F5',
-  shadow: 'rgba(0, 0, 0, 0.06)',
-  shadowDark: 'rgba(0, 0, 0, 0.1)',
+  tableHeader: '#F1F5F9',
+  shadow: 'rgba(15, 23, 42, 0.06)',
+  shadowDark: 'rgba(15, 23, 42, 0.1)',
 };
 
 export const radii = {
@@ -52,8 +55,8 @@ export const spacing = {
 
 /** Button / CTA gradients (headers use ScreenShell neutral bar, not these). */
 export const gradients = {
-  primary: ['#16A34A', '#15803D'],
-  accent: ['#F5F5F5', '#E5E5E5'],
+  primary: ['#3B82F6', '#2563EB'],
+  accent: ['#EFF6FF', '#DBEAFE'],
   success: ['#16A34A', '#15803D'],
   sunset: ['#F59E0B', '#EF4444'],
 };

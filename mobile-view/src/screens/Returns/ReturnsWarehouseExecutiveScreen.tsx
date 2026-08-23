@@ -15,8 +15,12 @@ import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
+import { getRoleFlags } from '../../utils/roles';
 
 export default function ReturnsWarehouseExecutiveScreen({ navigation }: any) {
+  const { user } = useAuth();
+  const { isAdmin } = getRoleFlags(user);
   const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -24,7 +28,11 @@ export default function ReturnsWarehouseExecutiveScreen({ navigation }: any) {
   const loadReturns = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await apiService.get('/stock-returns/warehouse-executive/queue');
+      // Super Admin/Admin: full list. Warehouse Executive: verification queue only.
+      const endpoint = isAdmin
+        ? '/stock-returns/warehouse-executive/list'
+        : '/stock-returns/warehouse-executive/queue';
+      const data = await apiService.get(endpoint);
       setReturns(Array.isArray(data) ? data : []);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load returns');
@@ -33,7 +41,7 @@ export default function ReturnsWarehouseExecutiveScreen({ navigation }: any) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useFocusEffect(
     useCallback(() => {
@@ -48,7 +56,8 @@ export default function ReturnsWarehouseExecutiveScreen({ navigation }: any) {
 
   return (
     <ScreenShell
-      title="Returns to Verify"
+      title="Warehouse Executive Returns"
+      subtitle="Verify submitted stock returns"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
@@ -61,7 +70,11 @@ export default function ReturnsWarehouseExecutiveScreen({ navigation }: any) {
         {returns.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>📋</Text>
-            <Text style={styles.emptyText}>No returns in queue. Status: Submitted</Text>
+            <Text style={styles.emptyText}>
+              {isAdmin
+                ? 'No executive stock returns found'
+                : 'No returns in queue. Status: Submitted'}
+            </Text>
           </View>
         ) : (
           returns.map((r) => (

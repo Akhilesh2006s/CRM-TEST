@@ -13,8 +13,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { apiService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
-import { colors } from '../../theme/colors';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
+import { colors, radii, spacing } from '../../theme/colors';
 
 export type DCRow = {
   _id: string;
@@ -55,6 +55,28 @@ function getProduct(dc: DCRow) {
     return prods.map((p) => p.product_name || p.product).filter(Boolean).join(', ') || '—';
   }
   return '—';
+}
+
+function formatCreatedOn(iso?: string) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function statusColors(status?: string) {
+  if (status === 'po_submitted') return { bg: colors.warningLight, fg: colors.warning };
+  if (status === 'created' || !status) return { bg: colors.infoLight, fg: colors.info };
+  return { bg: colors.backgroundMuted, fg: colors.textSecondary };
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
 }
 
 /** Matches web `dashboard/dc/admin/my` */
@@ -276,16 +298,13 @@ export default function DCAdminFullView() {
         </TouchableOpacity>
       }
     >
-      <PageSection title="Search">
+      <PageSection title="Find a DC">
         <WebInput
           placeholder="Search by school code or name..."
           value={searchQuery}
           onChangeText={setSearchQuery}
         />
         {backendSearching ? <Text style={styles.hint}>Searching backend…</Text> : null}
-      </PageSection>
-
-      <PageSection title="Filter by Executive">
         <WebSelect
           value={filterEmployee}
           onValueChange={setFilterEmployee}
@@ -305,34 +324,45 @@ export default function DCAdminFullView() {
           </Text>
         </PageSection>
       ) : (
-        <PageSection title={`DCs (${filteredItems.length})`}>
-          <DataTable
-            columns={['Date', 'Executive', 'Code', 'Customer', 'Phone', 'Product', 'Status', 'PO']}
-            rows={filteredItems.map((d) => [
-              d.createdAt ? new Date(d.createdAt).toLocaleDateString() : '—',
-              getExecutiveName(d),
-              getSchoolCode(d),
-              getCustomerName(d),
-              d.customerPhone || d.dcOrderId?.contact_mobile || '—',
-              getProduct(d),
-              d.status || 'created',
-              d.poPhotoUrl ? 'Yes' : 'No',
-            ])}
-          />
-          {filteredItems.map((d) => (
-            <View key={d._id} style={styles.actionRow}>
-              <Text style={styles.actionTitle} numberOfLines={1}>
-                {getCustomerName(d)}
-              </Text>
-              <View style={styles.actionBtns}>
-                <WebButton
-                  title={d.poPhotoUrl ? 'Update Photo' : 'Add Photo'}
-                  onPress={() => openSubmitDialog(d)}
-                />
-                <WebButton title="Raise DC" variant="outline" onPress={() => openRaiseDialog(d)} />
+        <PageSection
+          title={`DCs (${filteredItems.length})`}
+          description="Each card is one DC. School, executive, phone, and product are listed as full lines."
+        >
+          {filteredItems.map((d) => {
+            const phone = d.customerPhone || d.dcOrderId?.contact_mobile || '—';
+            const status = d.status || 'created';
+            const badge = statusColors(status);
+            const code = getSchoolCode(d);
+            return (
+              <View key={d._id} style={styles.dcCard}>
+                <View style={styles.dcCardTop}>
+                  <View style={styles.dcCardTitleWrap}>
+                    <Text style={styles.dcTitle}>{getCustomerName(d)}</Text>
+                    <Text style={styles.dcCode}>{code === '—' ? 'No school code' : `Code ${code}`}</Text>
+                  </View>
+                  <View style={[styles.badge, { backgroundColor: badge.bg }]}>
+                    <Text style={[styles.badgeText, { color: badge.fg }]}>{status}</Text>
+                  </View>
+                </View>
+                <InfoRow label="Created" value={formatCreatedOn(d.createdAt)} />
+                <InfoRow label="Executive" value={getExecutiveName(d)} />
+                <InfoRow label="Phone" value={phone} />
+                <InfoRow label="Product" value={getProduct(d)} />
+                <InfoRow label="PO photo" value={d.poPhotoUrl ? 'Uploaded' : 'Not uploaded'} />
+                <View style={styles.actionBtns}>
+                  <View style={styles.actionBtn}>
+                    <WebButton
+                      title={d.poPhotoUrl ? 'Update Photo' : 'Add Photo'}
+                      onPress={() => openSubmitDialog(d)}
+                    />
+                  </View>
+                  <View style={styles.actionBtn}>
+                    <WebButton title="Raise DC" variant="outline" onPress={() => openRaiseDialog(d)} />
+                  </View>
+                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </PageSection>
       )}
 
@@ -396,9 +426,31 @@ export default function DCAdminFullView() {
 
 const styles = StyleSheet.create({
   hint: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
-  actionRow: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
-  actionTitle: { fontWeight: '600', marginBottom: 8, color: colors.textPrimary },
-  actionBtns: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  dcCard: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: 12,
+  },
+  dcCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    gap: 8,
+  },
+  dcCardTitleWrap: { flex: 1, minWidth: 0 },
+  dcTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, lineHeight: 22 },
+  dcCode: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
+  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, alignSelf: 'flex-start' },
+  badgeText: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  infoRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6, gap: 8 },
+  infoLabel: { width: 88, fontSize: 13, color: colors.textSecondary, paddingTop: 1 },
+  infoValue: { flex: 1, fontSize: 14, color: colors.textPrimary, lineHeight: 20 },
+  actionBtns: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  actionBtn: { flexGrow: 1, minWidth: 130 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   modalBox: { backgroundColor: colors.backgroundLight, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, maxHeight: '90%' },
   modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: 8 },

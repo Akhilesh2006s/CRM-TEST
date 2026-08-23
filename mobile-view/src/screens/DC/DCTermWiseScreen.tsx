@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  Alert,
 } from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
@@ -14,6 +13,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import ScreenShell from '../../ui/ScreenShell';
 import { WebInput } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { isTransportComplete, TRANSPORT_REQUIRED_MESSAGE } from '../../utils/dcTransport';
+import { showAlert } from '../../utils/showAlert';
+import { navigateRoot } from '../../navigation/navigationRef';
 
 function getOrderId(dc: any): string | null {
   if (dc.dcOrderId && typeof dc.dcOrderId === 'object' && dc.dcOrderId._id) return dc.dcOrderId._id;
@@ -88,7 +90,7 @@ export default function DCTermWiseScreen({ navigation }: any) {
       const arr = Array.isArray(data) ? data : data?.data ?? [];
       setDcs((arr as any[]).filter((d: any) => d.status === 'scheduled_for_later'));
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load term-wise DCs');
+      showAlert('Error', error.message || 'Failed to load term-wise DCs');
       setDcs([]);
     } finally {
       setLoading(false);
@@ -168,7 +170,7 @@ export default function DCTermWiseScreen({ navigation }: any) {
                     style={[styles.actionBtn, styles.editBtn]}
                     onPress={() => {
                       if (!orderId) {
-                        Alert.alert('Error', 'DC Order not found for this client.');
+                        showAlert('Error', 'DC Order not found for this client.');
                         return;
                       }
                       navigation.navigate('ClientEditPO', { orderId, dcId: dc._id });
@@ -178,7 +180,25 @@ export default function DCTermWiseScreen({ navigation }: any) {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.requestBtn]}
-                    onPress={() => navigation.navigate('DCTermWiseRequestDC', { dcId: dc._id })}
+                    onPress={async () => {
+                      const orderId = getOrderId(dc);
+                      if (!orderId) {
+                        showAlert('Error', 'DC Order not found for this client.');
+                        return;
+                      }
+                      try {
+                        const order = await apiService.get(`/dc-orders/${orderId}`);
+                        if (!isTransportComplete(order)) {
+                          showAlert('Transport required', TRANSPORT_REQUIRED_MESSAGE);
+                          return;
+                        }
+                        if (!navigateRoot('DCTermWiseRequestDC', { dcId: dc._id })) {
+                          navigation.navigate('DCTermWiseRequestDC', { dcId: dc._id });
+                        }
+                      } catch (e: any) {
+                        showAlert('Error', e?.message || 'Failed to check transport details');
+                      }
+                    }}
                   >
                     <Text style={[styles.actionBtnText, styles.requestBtnText]}>Request DC</Text>
                   </TouchableOpacity>

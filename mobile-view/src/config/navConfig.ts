@@ -41,6 +41,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
   const {
     role,
     isAdmin,
+    isSuperAdmin,
     isPartner,
     isManager,
     isCoordinator,
@@ -56,7 +57,8 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
   if (isPartner || role === 'Vendor') {
     return [
       {
-        title: 'Partner',
+        title: 'Vendor',
+        icon: I.partner,
         items: [
           { label: 'Stocks', screen: 'PartnerStocks' },
           { label: 'My DCs', screen: 'PartnerDCs' },
@@ -70,6 +72,10 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       {
         title: 'Training & Services',
         items: [
+          {
+            label: 'Training & Services (Active / Upcoming)',
+            screen: 'TrainingTrainerMy',
+          },
           {
             label: 'Completed Training & Services',
             screen: 'TrainingTrainerCompleted',
@@ -86,7 +92,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       {
         title: 'Leave Management',
         items: [
-          { label: 'Apply for Leave', screen: 'LeaveRequest' },
+          { label: 'Leave Request', screen: 'LeaveRequest' },
           { label: 'My Leaves', screen: 'LeavesApproved' },
         ],
       },
@@ -131,7 +137,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
         items: [
           { label: 'Sample Request', screen: 'SamplesRequest' },
           { label: 'Stock Returns', screen: 'ReturnsEmployee' },
-          { label: 'Apply for Leave', screen: 'LeaveRequest' },
+          { label: 'Leave Request', screen: 'LeaveRequest' },
           { label: 'My Leaves', screen: 'LeavesApproved' },
         ],
       },
@@ -139,16 +145,29 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
   }
 
   if (isExecutiveManager) {
+    const managerId = (user as any)?._id;
     return [
       {
-        title: 'Executive Manager',
+        title: 'My Dashboard',
         items: [
-          { label: 'Dashboard', screen: 'ExecutiveManagerDashboard', params: { managerId: (user as any)?._id } },
-          { label: 'Executives', screen: 'ExecutiveManagerExecutives' },
-          { label: 'Closed Sales', screen: 'ClientsClosedSales' },
-          { label: 'Pending Expenses', screen: 'ExpenseExecutiveManagerPending' as const },
-          { label: 'My Leaves', screen: 'ExecutiveManagerLeaves', params: { managerId: (user as any)?._id } },
+          { label: 'My Dashboard', screen: 'ExecutiveManagerDashboard', params: { managerId } },
         ],
+      },
+      {
+        title: 'Executives',
+        items: [{ label: 'Executives', screen: 'ExecutiveManagerExecutives' }],
+      },
+      {
+        title: 'Clients',
+        items: [{ label: 'PO Edit Request', screen: 'ClientsClosedSales' }],
+      },
+      {
+        title: 'Expenses',
+        items: [{ label: 'Pending Expenses', screen: 'ExpenseExecutiveManagerPending' }],
+      },
+      {
+        title: 'Leave Management',
+        items: [{ label: 'Leave Management', screen: 'ExecutiveManagerLeaves', params: { managerId } }],
       },
     ];
   }
@@ -161,7 +180,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       { label: 'EMP DC', screen: 'DCEmp' },
     ];
     if (!isManager) {
-      clientsChildren.unshift({ label: 'Create Sale', screen: 'DCCreate' });
+      clientsChildren.unshift({ label: 'Create Sale', screen: 'DCCreateSale' });
     }
     return [
       { title: 'Clients', items: clientsChildren },
@@ -180,17 +199,17 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       {
         title: 'Reports',
         items: [
-          { label: 'Leads Report', screen: 'ReportsLeads' },
-          { label: 'Sales Visit Report', screen: 'ReportsSalesVisit' },
-          { label: 'Employee Track Report', screen: 'ReportsEmployeeTrack' },
-          { label: 'All Expenses Report', screen: 'ReportsExpenses' },
+          { label: 'Leads', screen: 'ReportsLeads' },
+          { label: 'Sales Visit', screen: 'ReportsSalesVisit' },
+          { label: 'Employee Track', screen: 'ReportsEmployeeTrack' },
+          { label: 'All Expenses', screen: 'ReportsExpenses' },
         ],
       },
       {
-        title: 'Leaves',
+        title: 'Leave Management',
         items: [
           { label: 'Pending Leaves', screen: 'LeavesPending' },
-          { label: 'Apply for Leave', screen: 'LeaveRequest' },
+          { label: 'Leave Request', screen: 'LeaveRequest' },
           { label: 'My Leaves', screen: 'LeavesApproved' },
         ],
       },
@@ -221,7 +240,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       {
         title: 'Finance',
         items: [
-          { label: 'Finance Approved Exp List', screen: 'ExpenseFinancePending' },
+          { label: 'Finance Pending Expenses', screen: 'ExpenseFinancePending' },
           { label: 'Payments', screen: 'PaymentList' },
         ],
       },
@@ -244,34 +263,40 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       title: 'Clients & DC',
       icon: I.clients,
       items: [
-        { label: 'Create Sale', screen: 'DCCreate', icon: '➕' },
+        { label: 'Create Sale', screen: 'DCCreateSale', icon: '➕' },
+        { label: 'All Created DCs', screen: 'DCAdminMy', icon: '📋' },
         { label: 'Closed Sales', screen: 'DCClosed', icon: '✅' },
         { label: 'Saved DC', screen: 'DCSaved', icon: '💾' },
         { label: 'Pending DC', screen: 'DCPending', icon: '⏳' },
         { label: 'EMP DC', screen: 'DCEmp', icon: '👤' },
-        { label: 'Term-Wise DC', screen: 'DCTermWise', icon: '📄' },
-        { label: 'Admin DC', screen: 'DCAdmin', icon: '🛡️' },
-        { label: 'Completed DC', screen: 'DCCompleted', icon: '📦' },
       ],
     },
     {
       title: 'Employees',
       icon: I.employees,
       items: [
+        ...(isSuperAdmin
+          ? [{ label: 'Assign Managers', screen: 'ExecutiveManagers', icon: '🛡️' }]
+          : []),
         { label: 'New Employee', screen: 'EmployeeNew', icon: '➕' },
         { label: 'Active Employees', screen: 'EmployeesActive', icon: '👥' },
         { label: 'Inactive Employees', screen: 'EmployeesInactive', icon: '🚫' },
-        { label: 'Zones', screen: 'EmployeesZones', icon: '🗺️' },
-        { label: 'Clusters', screen: 'EmployeesClusters', icon: '🔗' },
+        ...(isSuperAdmin
+          ? [
+              { label: 'Assign Areas', screen: 'ExecutivesAssignAreas', icon: '📍' },
+              { label: 'Zones', screen: 'EmployeesZones', icon: '🗺️' },
+              { label: 'Clusters', screen: 'EmployeesClusters', icon: '🔗' },
+            ]
+          : []),
       ],
     },
     {
-      title: 'Leaves',
+      title: 'Leave Management',
       icon: I.leaves,
       items: [
         { label: 'Pending Leaves', screen: 'LeavesPending', icon: '⏳' },
         { label: 'Leaves Report', screen: 'LeavesReport', icon: '📊' },
-        { label: 'Apply for Leave', screen: 'LeaveRequest', icon: '➕' },
+        { label: 'Leave Request', screen: 'LeaveRequest', icon: '➕' },
         { label: 'My Leaves', screen: 'LeavesApproved', icon: '📅' },
       ],
     },
@@ -279,13 +304,11 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       title: 'Training & Services',
       icon: I.training,
       items: [
-        { label: 'Trainers Dashboard', screen: 'TrainingDashboard', icon: '📊' },
-        { label: 'Assign Training', screen: 'TrainingAssign', icon: '📋' },
+        { label: 'Assign Training/Service', screen: 'TrainingAssign', icon: '📋' },
         { label: 'Trainings List', screen: 'TrainingList', icon: '📚' },
         { label: 'Services List', screen: 'ServicesList', icon: '🔧' },
-        { label: 'New Trainer', screen: 'TrainersNew', icon: '➕' },
-        { label: 'Active Trainers', screen: 'TrainersActive', icon: '✅' },
-        { label: 'Inactive Trainers', screen: 'TrainersInactive', icon: '🚫' },
+        { label: 'My Training & Services', screen: 'TrainingTrainerMy', icon: '🎓' },
+        { label: 'Completed Training & Services', screen: 'TrainingTrainerCompleted', icon: '✅' },
       ],
     },
     {
@@ -305,8 +328,11 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       title: 'Stock Returns',
       icon: I.returns,
       items: [
-        { label: 'Employee Returns', screen: 'ReturnsEmployee', icon: '👤' },
-        { label: 'Warehouse Returns', screen: 'ReturnsWarehouse', icon: '🏢' },
+        { label: 'Employee Returns List', screen: 'ReturnsEmployee', icon: '👤' },
+        { label: 'Executive Stock Returns', screen: 'ReturnsExecutive', icon: '📋' },
+        { label: 'Warehouse Executive Returns', screen: 'ReturnsWarehouseExecutive', icon: '🏭' },
+        { label: 'Warehouse Manager Returns', screen: 'ReturnsWarehouseManager', icon: '✅' },
+        { label: 'Warehouse Returns List', screen: 'ReturnsWarehouse', icon: '🏢' },
       ],
     },
     {
@@ -317,17 +343,21 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
         { label: 'Add Payment', screen: 'PaymentAdd', icon: '➕' },
         { label: 'Payments Done', screen: 'PaymentDone', icon: '✅' },
         { label: 'Transaction Report', screen: 'PaymentTransactionReport', icon: '📊' },
-        { label: 'Pending Cash Approval', screen: 'PaymentApprovalPendingCash', icon: '💵' },
-        { label: 'Pending Cheques', screen: 'PaymentApprovalPendingCheques', icon: '🏦' },
+        { label: 'Approval Pending Cash', screen: 'PaymentApprovalPendingCash', icon: '💵' },
+        { label: 'Approval Pending Cheques', screen: 'PaymentApprovalPendingCheques', icon: '🏦' },
+        { label: 'Approved Payments', screen: 'PaymentApproved', icon: '✔️' },
+        { label: 'HOLD Payments', screen: 'PaymentHold', icon: '⏸️' },
       ],
     },
     {
       title: 'Expenses',
       icon: I.expenses,
       items: [
-        { label: 'Pending Expenses', screen: 'ExpensePending', icon: '⏳' },
-        { label: 'Finance Approved', screen: 'ExpenseFinancePending', icon: '🏦' },
+        { label: 'Pending Expenses List', screen: 'ExpensePending', icon: '⏳' },
+        { label: 'Finance Pending Exp List', screen: 'ExpenseFinancePending', icon: '🏦' },
         { label: 'Create Expense', screen: 'ExpenseCreate', icon: '➕' },
+        { label: 'My Expenses', screen: 'ExpenseMy', icon: '📄' },
+        { label: 'Executive Manager Pending', screen: 'ExpenseExecutiveManagerPending', icon: '👔' },
       ],
     },
     {
@@ -337,46 +367,63 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
         { label: 'Leads Report', screen: 'ReportsLeads', icon: '📋' },
         { label: 'Sales Visit Report', screen: 'ReportsSalesVisit', icon: '🚗' },
         { label: 'Employee Track Report', screen: 'ReportsEmployeeTrack', icon: '📍' },
-        { label: 'DC Report', screen: 'ReportsDC', icon: '📦' },
+        { label: 'Contact Enquiries Report', screen: 'ReportsContactQueries', icon: '📞' },
+        { label: 'Change Logs Report', screen: 'ReportsChangeLogs', icon: '📝' },
         { label: 'Stock Report', screen: 'ReportsStock', icon: '📊' },
+        { label: 'DC Report', screen: 'ReportsDC', icon: '📦' },
         { label: 'Returns Report', screen: 'ReportsReturns', icon: '🔄' },
         { label: 'All Expenses Report', screen: 'ReportsExpenses', icon: '💸' },
+        { label: 'Training & Service Report', screen: 'ReportsTrainingService', icon: '🎓' },
       ],
     },
   ];
 
+  const settingsSection: NavSection = {
+    title: 'Settings',
+    icon: I.settings,
+    items: [
+      { label: 'Change Password', screen: 'SettingsPassword', icon: '🔐' },
+      { label: 'App Dashboard Data Upload', screen: 'SettingsUpload', icon: '📤' },
+      { label: 'SMS', screen: 'SettingsSMS', icon: '💬' },
+      { label: 'DB Backup', screen: 'SettingsBackup', icon: '💾' },
+      { label: 'Expense policy', screen: 'SettingsExpenses', icon: '⚙️' },
+    ],
+  };
+
   if (isAdmin) {
-    const leavesIdx = sections.findIndex((s) => s.title === 'Leaves');
-    if (leavesIdx >= 0) {
-      sections[leavesIdx] = {
-        ...sections[leavesIdx],
-        items: sections[leavesIdx].items.filter(
-          (i) => i.screen !== 'LeaveRequest' && i.screen !== 'LeavesApproved'
-        ),
-      };
-    }
     sections.push({
       title: 'Products',
       icon: I.products,
       items: [
         { label: 'All Products', screen: 'ProductsList', icon: '📦' },
         { label: 'Add Product', screen: 'ProductNew', icon: '➕' },
-        { label: 'Partners / Vendors', screen: 'VendorsList', icon: '🤝' },
         { label: 'Deliverables', screen: 'DeliverablesList', icon: '📋' },
       ],
     });
     sections.push({
-      title: 'Settings',
-      icon: I.settings,
+      title: 'Vendor',
+      icon: I.partner,
       items: [
-        { label: 'Change Password', screen: 'SettingsPassword', icon: '🔐' },
-        { label: 'Data Upload', screen: 'SettingsUpload', icon: '📤' },
-        { label: 'SMS Settings', screen: 'SettingsSMS', icon: '💬' },
-        { label: 'DB Backup', screen: 'SettingsBackup', icon: '💾' },
-        { label: 'Expense Policy', screen: 'SettingsExpenses', icon: '⚙️' },
+        { label: 'Vendors', screen: 'VendorsList', icon: '🤝' },
+        { label: 'Stocks', screen: 'PartnerStocks', icon: '📦' },
+        { label: 'My DCs', screen: 'PartnerDCs', icon: '🚚' },
       ],
     });
   }
 
-  return sections;
+  sections.push(settingsSection);
+
+  // Super Admin has no operational Leads module; privileged menus are Super Admin only.
+  if (isSuperAdmin) {
+    return sections.filter((s) => s.title !== 'Leads');
+  }
+
+  return sections.filter(
+    (s) =>
+      s.title !== 'Stock Returns' &&
+      s.title !== 'Payments' &&
+      s.title !== 'Expenses' &&
+      s.title !== 'Reports' &&
+      s.title !== 'Settings'
+  );
 }

@@ -1,12 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, RefreshControl, ActivityIndicator, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  ActivityIndicator,
+  Platform,
+} from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { exportContactQueriesReport } from '../../utils/exportContactQueriesReport';
+import { fetchContactEnquiries } from '../../utils/fetchContactEnquiries';
 
-interface ContactQuery {
+type ContactQuery = {
   _id: string;
   school_code?: string;
   school_name?: string;
@@ -17,28 +28,73 @@ interface ContactQuery {
   description?: string;
   contact_mobile?: string;
   enquiry_date?: string;
+  status?: string;
   executive?: { name?: string };
+};
+
+function formatEnquiryDate(dateStr?: string) {
+  if (!dateStr) return '-';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export default function ReportsContactQueriesScreen({ navigation }: any) {
+function extractContactName(query: ContactQuery) {
+  if ((query as { contact_person?: string }).contact_person?.trim()) {
+    return (query as { contact_person?: string }).contact_person!.trim();
+  }
+  const desc = query.description || '';
+  const match = desc.match(/Contact:\s*(.+?)(?:\n|$)/i);
+  if (match?.[1]) return match[1].trim();
+  return '-';
+}
+
+function getDisplayStatus(status?: string) {
+  if (status === 'Resolved') return 'Closed';
+  return status || 'Pending';
+}
+
+function isNewSchool(query: ContactQuery) {
+  return (query.school_type || '').toLowerCase() === 'new';
+}
+
+function getSchoolKey(query: ContactQuery) {
+  return query.school_code || query.school_name || query._id;
+}
+
+export default function ReportsContactQueriesScreen() {
+  const [allQueries, setAllQueries] = useState<ContactQuery[]>([]);
   const [queries, setQueries] = useState<ContactQuery[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [search, setSearch] = useState('');
-  const [zoneFilter, setZoneFilter] = useState('all');
+  const [exporting, setExporting] = useState(false);
+
+  const [schoolSearch, setSchoolSearch] = useState('');
+  const [zone, setZone] = useState('');
+  const [contactMobile, setContactMobile] = useState('');
+  const [enquiryFrom, setEnquiryFrom] = useState('');
+  const [enquiryTo, setEnquiryTo] = useState('');
 
   useEffect(() => {
     loadQueries();
   }, []);
 
+  useEffect(() => {
+    applyFilters();
+  }, [allQueries, schoolSearch, zone, contactMobile, enquiryFrom, enquiryTo]);
+
+  const zones = useMemo(() => {
+    return Array.from(new Set(allQueries.map((q) => q.zone).filter(Boolean))).sort() as string[];
+  }, [allQueries]);
+
   const loadQueries = async () => {
     try {
       setLoading(true);
-      const data = await apiService.get<ContactQuery[]>('/contact-queries');
-      setQueries(data || []);
+      const data = await fetchContactEnquiries();
+      setAllQueries(data || []);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load contact queries');
-      setQueries([]);
+      Alert.alert('Error', error.message || 'Failed to load contact enquiries');
+      setAllQueries([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -50,78 +106,176 @@ export default function ReportsContactQueriesScreen({ navigation }: any) {
     loadQueries();
   };
 
-  const zones = useMemo(() => {
-    const set = new Set<string>();
-    queries.forEach((q) => {
-      if (q.zone) set.add(q.zone);
-    });
-    return Array.from(set).sort();
+  const applyFilters = () => {
+    let filtered = [...allQueries];
+    const search = schoolSearch.trim().toLowerCase();
+
+    if (search) {
+      filtered = filtered.filter((q) => {
+        const name = q.school_name?.toLowerCase() || '';
+        const code = q.school_code?.toLowerCase() || '';
+        return name.includes(search) || code.includes(search);
+      });
+    }
+
+    if (zone) {
+      filtered = filtered.filter((q) => q.zone?.toLowerCase() === zone.toLowerCase());
+    }
+
+    if (contactMobile.trim()) {
+      filtered = filtered.filter((q) => q.contact_mobile?.includes(contactMobile.trim()));
+    }
+
+    if (enquiryFrom) {
+      const from = new Date(enquiryFrom);
+      filtered = filtered.filter((q) => q.enquiry_date && new Date(q.enquiry_date) >= from);
+    }
+
+    if (enquiryTo) {
+      const to = new Date(enquiryTo + 'T23:59:59');
+      filtered = filtered.filter((q) => q.enquiry_date && new Date(q.enquiry_date) <= to);
+    }
+
+    setQueries(filtered);
+  };
+
+  const summary = useMemo(() => {
+    const newCount = queries.filter(isNewSchool).length;
+    return {
+      totalEnquiries: queries.length,
+      uniqueSchools: new Set(queries.map(getSchoolKey)).size,
+      newExisting: `${newCount} / ${queries.length - newCount}`,
+      activeZones: new Set(queries.map((q) => q.zone).filter(Boolean)).size,
+    };
   }, [queries]);
 
-  const filteredQueries = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return queries.filter((q) => {
-      const matchesZone = zoneFilter === 'all' || (q.zone || '').toLowerCase() === zoneFilter.toLowerCase();
-      const matchesSearch =
-        !term ||
-        q.school_name?.toLowerCase().includes(term) ||
-        q.school_code?.toLowerCase().includes(term) ||
-        q.contact_mobile?.includes(term) ||
-        q.subject?.toLowerCase().includes(term);
-      return matchesZone && matchesSearch;
-    });
-  }, [queries, zoneFilter, search]);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await exportContactQueriesReport(
+        {
+          zone: zone || undefined,
+          schoolName: schoolSearch.trim() || undefined,
+          schoolCode: schoolSearch.trim() || undefined,
+          fromDate: enquiryFrom || undefined,
+          toDate: enquiryTo || undefined,
+          contactMobile: contactMobile.trim() || undefined,
+        },
+        `Contact_Enquiries_Report_${new Date().toISOString().split('T')[0]}.xlsx`
+      );
+      if (Platform.OS === 'web') {
+        Alert.alert('Success', 'Excel file downloaded successfully');
+      }
+    } catch (error: any) {
+      Alert.alert('Export failed', error.message || 'Failed to export to Excel');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <ScreenShell
-      title="Contact Queries"
+      title="Contact Enquiries"
+      subtitle="School contact records and logged enquiries"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
     >
-<View style={styles.filters}>
-        <WebInput
-          style={styles.searchInput}
-          placeholder="Search by school, subject, or mobile" value={search}
-          onChangeText={setSearch}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        <WebButton
+          title={exporting ? 'Exporting…' : 'Export to Excel'}
+          onPress={handleExport}
+          loading={exporting}
         />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
-          <TouchableOpacity
-            style={[styles.filterChip, zoneFilter === 'all' && styles.filterChipActive]}
-            onPress={() => setZoneFilter('all')}
-          >
-            <Text style={[styles.filterChipText, zoneFilter === 'all' && styles.filterChipTextActive]}>All Zones</Text>
-          </TouchableOpacity>
-          {zones.map((zone) => (
-            <TouchableOpacity
-              key={zone}
-              style={[styles.filterChip, zoneFilter === zone && styles.filterChipActive]}
-              onPress={() => setZoneFilter(zone)}
-            >
-              <Text style={[styles.filterChipText, zoneFilter === zone && styles.filterChipTextActive]}>{zone}</Text>
-            </TouchableOpacity>
-          ))}
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.kpiRow}>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Total Enquiries</Text>
+            <Text style={styles.kpiValue}>{summary.totalEnquiries}</Text>
+          </View>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Unique Schools</Text>
+            <Text style={styles.kpiValue}>{summary.uniqueSchools}</Text>
+          </View>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>New / Existing</Text>
+            <Text style={styles.kpiValue}>{summary.newExisting}</Text>
+          </View>
+          <View style={styles.kpiCard}>
+            <Text style={styles.kpiLabel}>Active Zones</Text>
+            <Text style={styles.kpiValue}>{summary.activeZones}</Text>
+          </View>
         </ScrollView>
-      </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {filteredQueries.length === 0 ? (
+
+        <View style={styles.filters}>
+          <WebInput
+            placeholder="Search by school name or code"
+            value={schoolSearch}
+            onChangeText={setSchoolSearch}
+          />
+          <WebSelect
+            label="Zone"
+            value={zone}
+            onValueChange={setZone}
+            placeholder="All Zones"
+            items={[{ label: 'All Zones', value: '' }, ...zones.map((z) => ({ label: z, value: z }))]}
+          />
+          <WebInput
+            placeholder="Contact Mobile"
+            value={contactMobile}
+            onChangeText={setContactMobile}
+            keyboardType="phone-pad"
+          />
+          <WebLabel>Enquiry From</WebLabel>
+          <WebInput
+            placeholder="YYYY-MM-DD"
+            value={enquiryFrom}
+            onChangeText={setEnquiryFrom}
+            {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})}
+          />
+          <WebLabel>Enquiry To</WebLabel>
+          <WebInput
+            placeholder="YYYY-MM-DD"
+            value={enquiryTo}
+            onChangeText={setEnquiryTo}
+            {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})}
+          />
+          <WebButton title="Search" onPress={applyFilters} />
+        </View>
+
+        <View style={styles.logHeader}>
+          <Text style={styles.logTitle}>Enquiry log</Text>
+          <Text style={styles.logCount}>{queries.length} enquiries found</Text>
+        </View>
+
+        {loading ? (
+          <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 40 }} />
+        ) : queries.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>❓</Text>
-            <Text style={styles.emptyText}>No contact queries found</Text>
+            <Text style={styles.emptyText}>No enquiries found</Text>
           </View>
         ) : (
-          filteredQueries.map((query) => (
+          queries.map((query, index) => (
             <View key={query._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.schoolName}>{query.school_name || 'School'}</Text>
-                <Text style={styles.zoneBadge}>{query.zone || '-'}</Text>
+              <View style={styles.cardTop}>
+                <Text style={styles.indexText}>#{index + 1}</Text>
+                <Text style={styles.dateText}>{formatEnquiryDate(query.enquiry_date)}</Text>
               </View>
-              <Text style={styles.infoLine}>Code: {query.school_code || '-'}</Text>
-              <Text style={styles.infoLine}>Subject: {query.subject || '-'}</Text>
-              <Text style={styles.infoLine}>Contact: {query.contact_mobile || '-'}</Text>
+              <View style={styles.titleRow}>
+                <Text style={styles.schoolName}>{query.school_name || 'School'}</Text>
+                {isNewSchool(query) ? <Text style={styles.newBadge}>New</Text> : null}
+              </View>
+              <Text style={styles.schoolCode}>{query.school_code || '-'}</Text>
               <Text style={styles.infoLine}>Executive: {query.executive?.name || '-'}</Text>
-              <Text style={styles.infoLine}>Date: {query.enquiry_date ? new Date(query.enquiry_date).toLocaleDateString('en-IN') : '-'}</Text>
-              {query.description ? <Text style={styles.infoLine}>Notes: {query.description}</Text> : null}
+              <Text style={styles.infoLine}>Zone: {query.zone || '-'}</Text>
+              <Text style={styles.infoLine}>Contact: {extractContactName(query)}</Text>
+              <Text style={styles.infoLine}>Mobile: {query.contact_mobile || '-'}</Text>
+              <Text style={styles.infoLine}>Subject: {query.subject || '-'}</Text>
+              <Text style={styles.statusBadge}>{getDisplayStatus(query.status)}</Text>
             </View>
           ))
         )}
@@ -131,31 +285,74 @@ export default function ReportsContactQueriesScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  filters: { paddingHorizontal: 16, paddingVertical: 12 },
-  searchInput: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, color: colors.textPrimary },
-  filterScroll: { marginTop: 10 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
-  filterChipActive: { backgroundColor: colors.primary + '20', borderColor: colors.primary },
-  filterChipText: { ...typography.body.medium, color: colors.textPrimary },
-  filterChipTextActive: { color: colors.primary, fontWeight: '600' },
-  content: { flex: 1, paddingHorizontal: 16 },
-  emptyContainer: { alignItems: 'center', marginTop: 60 },
+  scrollContent: { paddingBottom: 24 },
+  kpiRow: { paddingHorizontal: 16, gap: 10, marginTop: 12 },
+  kpiCard: {
+    width: 150,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundLight,
+  },
+  kpiLabel: { ...typography.label.small, color: colors.textSecondary, textTransform: 'uppercase' },
+  kpiValue: { ...typography.heading.h3, color: colors.textPrimary, marginTop: 4 },
+  filters: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 16,
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundLight,
+  },
+  logHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  logTitle: { ...typography.heading.h3, color: colors.textPrimary },
+  logCount: { ...typography.body.medium, color: colors.textSecondary },
+  emptyContainer: { alignItems: 'center', marginTop: 60, paddingHorizontal: 16 },
   emptyIcon: { fontSize: 64, marginBottom: 12 },
   emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  card: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    marginHorizontal: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  indexText: { ...typography.label.medium, color: colors.textSecondary },
+  dateText: { ...typography.label.medium, color: colors.textSecondary },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   schoolName: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  zoneBadge: { ...typography.label.small, color: colors.primary, borderWidth: 1, borderColor: colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  newBadge: {
+    ...typography.label.small,
+    color: '#1d4ed8',
+    backgroundColor: '#dbeafe',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  schoolCode: { ...typography.label.small, color: colors.textSecondary, marginTop: 2 },
   infoLine: { ...typography.body.medium, color: colors.textSecondary, marginTop: 4 },
+  statusBadge: {
+    ...typography.label.small,
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#d1fae5',
+    color: '#047857',
+    overflow: 'hidden',
+  },
 });
-
-

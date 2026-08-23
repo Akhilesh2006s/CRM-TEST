@@ -19,6 +19,10 @@ import { apiService } from '../../services/api';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { useAuth } from '../../context/AuthContext';
+import { isTransportComplete, TRANSPORT_REQUIRED_MESSAGE } from '../../utils/dcTransport';
+import { showAlert, showConfirm } from '../../utils/showAlert';
+import { navigateRoot } from '../../navigation/navigationRef';
+import { resolveMyClientsDcStatus } from '../../utils/myClientsDcStatus';
 
 export default function DCClientScreen({ navigation }: any) {
   const { user } = useAuth();
@@ -74,11 +78,51 @@ export default function DCClientScreen({ navigation }: any) {
     return typeof o === 'object' && o._id ? o._id : o;
   };
 
+  const orderHasTerm2Products = (dc: any) => {
+    const products =
+      (typeof dc.dcOrderId === 'object' && Array.isArray(dc.dcOrderId?.products)
+        ? dc.dcOrderId.products
+        : null) ||
+      (Array.isArray(dc.productDetails) ? dc.productDetails : []) ||
+      [];
+    return products.some((p: any) => {
+      const term = String(p?.term || '').trim();
+      if (term === 'Term 2') return true;
+      const level = String(p?.level || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
+      return level === 'level2' || level === 'l2' || level.startsWith('level2');
+    });
+  };
+
+  const isPendingPoEdit = (dc: any) => {
+    const pe = typeof dc.dcOrderId === 'object' ? dc.dcOrderId?.pendingEdit : null;
+    return !!(pe && pe.status === 'pending');
+  };
+
+  const getOrderStatus = (dc: any) => {
+    if (typeof dc.dcOrderId === 'object' && dc.dcOrderId?.status) return dc.dcOrderId.status;
+    return null;
+  };
+
+  const getDcStatus = (dc: any) => resolveMyClientsDcStatus(dc);
+
+  const isDcRequested = (dc: any) => {
+    const resolved = getDcStatus(dc);
+    const orderStatus = getOrderStatus(dc);
+    return resolved === 'dc_requested' || orderStatus === 'dc_requested';
+  };
+
   const canRequestDC = (dc: any) => {
-    const orderStatus = dc.dcOrderId?.status;
-    if (orderStatus === 'dc_requested' || orderStatus === 'dc_accepted' || orderStatus === 'dc_approved' || orderStatus === 'dc_sent_to_senior') return false;
+    if (isDcRequested(dc)) return false;
+    const orderStatus = getOrderStatus(dc);
     const poChange = dc.dcOrderId?.poChangeRequest;
+    if (isPendingPoEdit(dc)) return false;
     if (poChange && poChange.status === 'PENDING_MANAGER_APPROVAL') return false;
+    if (orderStatus === 'dc_accepted' || orderStatus === 'dc_approved' || orderStatus === 'dc_sent_to_senior') {
+      return false;
+    }
     return true;
   };
 
@@ -87,19 +131,23 @@ export default function DCClientScreen({ navigation }: any) {
     return !!(poChange && poChange.status === 'PENDING_MANAGER_APPROVAL');
   };
 
-  const getOrderStatus = (dc: any) => {
-    if (typeof dc.dcOrderId === 'object' && dc.dcOrderId?.status) return dc.dcOrderId.status;
-    return null;
-  };
-
-  const getDcStatus = (dc: any) => dc.status || 'created';
-
-  /** Web: Edit PO + Request DC when created / po_submitted */
+  /** Web: Edit PO + Request DC when created / po_submitted / sent_to_manager (pending EM) */
   const showEditAndRequest = (dc: any) => {
     const dcStatus = getDcStatus(dc);
     const orderStatus = getOrderStatus(dc);
+    if (isDcRequested(dc)) return true;
     if (orderStatus === 'saved' || !orderStatus) return true;
-    return dcStatus === 'created' || dcStatus === 'po_submitted';
+    if (orderStatus === 'dc_requested' && orderHasTerm2Products(dc)) return true;
+    return dcStatus === 'created' || dcStatus === 'po_submitted' || dcStatus === 'sent_to_manager';
+  };
+
+  const formatDcStatusLabel = (status: string) => {
+    const key = (status || 'created').toLowerCase();
+    if (key === 'sent_to_manager') return 'Sent to manager';
+    if (key === 'po_submitted') return 'PO submitted';
+    if (key === 'dc_requested') return 'Awaiting Closed Sales';
+    if (key === 'created') return 'Created';
+    return key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   };
 
   const getSchoolCode = (dc: any) => {
@@ -196,6 +244,50 @@ export default function DCClientScreen({ navigation }: any) {
     }
   };
 
+  const handleRequestDC = async (dc: any) => {
+    const orderId = getOrderId(dc);
+    if (!orderId) {
+      showAlert('Error', 'This client has no order id.');
+      return;
+    }
+    if (!canRequestDC(dc)) {
+      showAlert(
+        'Request DC locked',
+        isPoChangePending(dc)
+          ? 'Waiting for manager approval on PO change.'
+          : 'Request DC is not available for this client right now.',
+      );
+      return;
+    }
+
+    try {
+      // Always fetch latest order — list payload often lacks transport fields
+      const order = await apiService.get(`/dc-orders/${orderId}`);
+      if (!isTransportComplete(order)) {
+        showConfirm(
+          'Transport required',
+          TRANSPORT_REQUIRED_MESSAGE,
+          () => {
+            if (!navigateRoot('ClientEditPO', { orderId })) {
+              navigation.navigate('ClientEditPO', { orderId });
+            }
+          },
+          'Open Edit PO',
+        );
+        return;
+      }
+      if (!navigateRoot('DCRequestSummary', { orderId, client: dc, dcId: dc._isConvertedLead ? undefined : dc._id })) {
+        navigation.navigate('DCRequestSummary', {
+          orderId,
+          client: dc,
+          dcId: dc._isConvertedLead ? undefined : dc._id,
+        });
+      }
+    } catch (e: any) {
+      showAlert('Error', e?.message || 'Failed to check transport details');
+    }
+  };
+
   const filteredDCs = dcs.filter((dc) => {
     const customerName = dc.customerName || dc.dcOrderId?.school_name || '';
     return customerName.toLowerCase().includes(searchQuery.toLowerCase());
@@ -232,9 +324,7 @@ export default function DCClientScreen({ navigation }: any) {
           filteredDCs.map((dc) => {
             const orderId = getOrderId(dc);
             const dcStatus = getDcStatus(dc);
-            const statusLabel = (dcStatus || 'created')
-              .replace(/_/g, ' ')
-              .replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const statusLabel = formatDcStatusLabel(dcStatus);
             const createdDate = formatDate(dc.createdAt);
             const turnedDate =
               typeof dc.dcOrderId === 'object' && dc.dcOrderId?.createdAt
@@ -289,23 +379,29 @@ export default function DCClientScreen({ navigation }: any) {
                       >
                         <Text style={styles.cardButtonTextEdit}>Edit PO</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[
-                          styles.cardButton,
-                          styles.cardButtonRequest,
-                          (!canRequestDC(dc) || !orderId) && styles.cardButtonDisabled,
-                        ]}
-                        onPress={() =>
-                          orderId &&
-                          canRequestDC(dc) &&
-                          navigation.navigate('DCRequestSummary', { orderId, client: dc })
-                        }
-                        disabled={!orderId || !canRequestDC(dc)}
-                      >
-                        <Text style={styles.cardButtonTextRequest}>
-                          {isPoChangePending(dc) ? 'Waiting for Approval' : 'Request DC'}
-                        </Text>
-                      </TouchableOpacity>
+                      {isDcRequested(dc) ? (
+                        <View style={[styles.cardButton, styles.cardButtonRequest, styles.cardButtonDisabled]}>
+                          <Text style={styles.cardButtonTextRequestDisabled}>Awaiting Closed Sales</Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={[
+                            styles.cardButton,
+                            styles.cardButtonRequest,
+                            (!canRequestDC(dc) || !orderId) && styles.cardButtonDisabled,
+                          ]}
+                          onPress={() => handleRequestDC(dc)}
+                          disabled={!orderId || !canRequestDC(dc)}
+                        >
+                          <Text style={styles.cardButtonTextRequest}>
+                            {isPoChangePending(dc)
+                              ? 'Waiting for Approval'
+                              : isPendingPoEdit(dc)
+                                ? 'Waiting for Manager'
+                                : 'Request DC'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </>
                   ) : (
                     <>
@@ -351,7 +447,7 @@ export default function DCClientScreen({ navigation }: any) {
                 <>
                   <Text style={styles.modalLabel}>Customer: {selectedDC.customerName || selectedDC.dcOrderId?.school_name}</Text>
                   <Text style={styles.modalLabel}>Product: {selectedDC.product || 'N/A'}</Text>
-                  <Text style={styles.modalLabel}>Status: {selectedDC.status || 'Created'}</Text>
+                  <Text style={styles.modalLabel}>Status: {formatDcStatusLabel(resolveMyClientsDcStatus(selectedDC))}</Text>
                   {selectedDC.poPhotoUrl && (
                     <Image source={{ uri: selectedDC.poPhotoUrl }} style={styles.previewImage} />
                   )}
@@ -473,6 +569,7 @@ const styles = StyleSheet.create({
   cardButtonTextEdit: { ...typography.body.small, color: colors.textPrimary, fontWeight: '600' },
   cardButtonTextInvoice: { ...typography.body.small, color: colors.textLight, fontWeight: '600' },
   cardButtonTextRequest: { ...typography.body.small, color: colors.textLight, fontWeight: '600' },
+  cardButtonTextRequestDisabled: { ...typography.body.small, color: colors.textSecondary, fontWeight: '600' },
   hint: { ...typography.body.small, color: colors.textSecondary, paddingVertical: 16 },
   invoiceRow: { marginBottom: 12, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
   invoiceProduct: { ...typography.body.medium, fontWeight: '600', color: colors.textPrimary },

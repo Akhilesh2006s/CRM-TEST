@@ -10,18 +10,160 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { apiService, getApiUrl } from '../../services/api';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebSelect } from '../../ui/WebPrimitives';
 import { useAuth } from '../../context/AuthContext';
 
 const RETURN_TYPES = ['Damaged', 'Expired', 'Excess', 'Wrong item', 'Replacement'];
+const RETURN_REASONS = ['Damaged', 'Expired', 'Excess', 'Wrong item', 'Replacement', 'Customer request', 'Quality issue', 'Other'];
+
+function defaultFinYear(fromDate?: string) {
+  const d = fromDate ? new Date(fromDate) : new Date();
+  const y = d.getFullYear();
+  return `${y}-${String(y + 1).slice(-2)}`;
+}
+
+function dcNoFrom(dc: any) {
+  const dcId = String(dc._id || '');
+  if (dc.createdAt) {
+    const year = new Date(dc.createdAt).getFullYear();
+    return `${String(year).slice(-2)}-${String(year + 1).slice(-2)}/${dcId.slice(-4)}`;
+  }
+  return `DC-${dcId.slice(-6)}`;
+}
+
+function loadCompletedDcOptions(dcs: any[]) {
+  return dcs
+    .map((dc) => mapCompletedDcToOption(dc))
+    .filter(Boolean);
+}
+
+function normalizeDcProducts(dc: any, order: any | null) {
+  const productDetails = Array.isArray(dc?.productDetails) ? dc.productDetails : [];
+  const fromDetails = productDetails
+    .map((p: any) => ({
+      product_name: String(p.product || p.productName || p.product_name || '').trim(),
+      quantity: Number(
+        p.deliveredQuantity ?? p.deliverableQuantity ?? p.quantity ?? p.strength ?? 0
+      ),
+      unit_price: Number(p.price ?? p.unit_price ?? p.unitPrice ?? 0),
+    }))
+    .filter((p: { product_name: string }) => p.product_name);
+
+  if (fromDetails.length > 0) return fromDetails;
+
+  const orderProducts = Array.isArray(order?.products)
+    ? order.products
+        .map((p: any) => ({
+          product_name: String(p.product_name || p.product || '').trim(),
+          quantity: Number(p.quantity ?? p.strength ?? 0),
+          unit_price: Number(p.unit_price ?? 0),
+        }))
+        .filter((p: { product_name: string }) => p.product_name)
+    : [];
+
+  if (orderProducts.length > 0) return orderProducts;
+
+  if (dc?.product) {
+    return [
+      {
+        product_name: String(dc.product).trim(),
+        quantity: Number(
+          dc.deliverableQuantity ??
+            dc.deliveredQuantity ??
+            dc.requestedQuantity ??
+            dc.quantity ??
+            0
+        ),
+        unit_price: 0,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function mapCompletedDcToOption(dc: any) {
+  const order = dc.dcOrderId && typeof dc.dcOrderId === 'object' ? dc.dcOrderId : null;
+  const linkedDcOrderId = order?._id
+    ? String(order._id)
+    : typeof dc.dcOrderId === 'string'
+      ? dc.dcOrderId
+      : '';
+
+  const schoolName = (order?.school_name || dc.customerName || '').trim();
+  if (!schoolName) return null;
+
+  const products = normalizeDcProducts(dc, order);
+
+  return {
+    _id: String(dc._id),
+    linkedDcOrderId,
+    dc_code: dcNoFrom(dc),
+    school_name: schoolName,
+    school_code: order?.school_code || '',
+    school_type: order?.school_type || '',
+    contact_person: order?.contact_person || '',
+    contact_mobile: order?.contact_mobile || dc.customerPhone || '',
+    address: order?.address || dc.customerAddress || '',
+    location: order?.location || '',
+    city: order?.city || '',
+    zone: order?.zone || '',
+    cluster_code: order?.cluster_code || '',
+    transport_name: order?.transport_name || dc.transport || '',
+    year: order?.year || '',
+    createdAt: dc.completedAt || dc.createdAt,
+    lrNo: dc.lrNo || '',
+    products,
+  };
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+}) {
+  return (
+    <View style={{ marginBottom: 12 }}>
+      <Text style={formStyles.label}>
+        {label}
+        {required ? ' *' : ''}
+      </Text>
+      {Platform.OS === 'web' ? (
+        React.createElement('input', {
+          type: 'date',
+          value: value || '',
+          onChange: (e: any) => onChange(e.target.value || ''),
+          style: {
+            width: '100%',
+            padding: 12,
+            borderRadius: 12,
+            border: '1px solid #E2E8F0',
+            fontSize: 16,
+            backgroundColor: '#fff',
+            color: '#1E293B',
+            boxSizing: 'border-box',
+          },
+        })
+      ) : (
+        <WebInput value={value} onChangeText={onChange} placeholder="YYYY-MM-DD" />
+      )}
+    </View>
+  );
+}
 
 const NEXT_ACTION_BY_STATUS: Record<string, string> = {
   Draft: 'Complete & Submit',
@@ -37,12 +179,59 @@ const NEXT_ACTION_BY_STATUS: Record<string, string> = {
 };
 
 function formatDate(d: string | Date | undefined) {
-  if (!d) return '';
+  if (!d) return '—';
   try {
-    return new Date(d).toLocaleDateString('en-IN');
+    return new Date(d).toLocaleDateString('en-US');
   } catch {
-    return '';
+    return '—';
   }
+}
+
+function formatDateTime(d: string | Date | undefined) {
+  if (!d) return '—';
+  try {
+    return new Date(d).toLocaleString('en-US');
+  } catch {
+    return '—';
+  }
+}
+
+function cell(value: string | number | undefined | null) {
+  if (value === undefined || value === null || value === '') return '—';
+  return String(value);
+}
+
+function getSaleIdFromReturn(ret: any) {
+  if (ret?.saleId) return String(ret.saleId);
+  if (ret?.dcOrderId && typeof ret.dcOrderId === 'object' && ret.dcOrderId.dc_code) {
+    return ret.dcOrderId.dc_code;
+  }
+  if (typeof ret?.dcOrderId === 'string') return ret.dcOrderId;
+  return '—';
+}
+
+function getTotalQty(ret: any, rows: ProductRow[]) {
+  if (ret?.totalQuantity != null) return ret.totalQuantity;
+  if (ret?.returnQty != null) return ret.returnQty;
+  return rows.reduce((s, r) => s + (parseInt(r.returnQty, 10) || 0), 0);
+}
+
+function resolvePhotoUrl(url: string) {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  const base = getApiUrl().replace(/\/$/, '');
+  return url.startsWith('/') ? `${base}${url}` : `${base}/${url}`;
+}
+
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={viewStyles.fieldWrap}>
+      <Text style={viewStyles.fieldLabel}>{label}</Text>
+      <View style={viewStyles.fieldBox}>
+        <Text style={viewStyles.fieldValue}>{value}</Text>
+      </View>
+    </View>
+  );
 }
 
 type ProductRow = {
@@ -50,25 +239,40 @@ type ProductRow = {
   product: string;
   soldQty: number;
   returnQty: string;
+  unitPrice: string;
   reason: string;
   remarks: string;
 };
 
+function productsToRows(order: any): ProductRow[] {
+  const list = Array.isArray(order?.products) ? order.products : [];
+  return list.map((p: any, i: number) => ({
+    id: `row-${order._id}-${i}`,
+    product: p.product_name || p.product || '',
+    soldQty: Number(p.quantity) || 0,
+    returnQty: '',
+    unitPrice: String(p.unit_price ?? p.unitPrice ?? p.price ?? ''),
+    reason: '',
+    remarks: '',
+  }));
+}
+
 export default function StockReturnAddScreen({ navigation, route }: any) {
   const { user } = useAuth();
-  const returnIdParam = route?.params?.returnId as string | undefined; // existing return _id for edit/view
-  const [step, setStep] = useState(1);
+  const returnIdParam = route?.params?.returnId as string | undefined;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [customers, setCustomers] = useState<string[]>([]);
-  const [sales, setSales] = useState<any[]>([]);
+  const [completedDcs, setCompletedDcs] = useState<any[]>([]);
   const [warehouseLocations, setWarehouseLocations] = useState<string[]>([]);
+  const [availableProducts, setAvailableProducts] = useState<string[]>([]);
   const [existingReturn, setExistingReturn] = useState<any>(null);
   const scrollRef = useRef<ScrollView>(null);
 
   const [customerName, setCustomerName] = useState('');
   const [saleId, setSaleId] = useState('');
-  const [warehouse, setWarehouse] = useState('');
+  const [dcOrderId, setDcOrderId] = useState('');
+  const [selectedCompletedDcId, setSelectedCompletedDcId] = useState('');
+  const [warehouse, setWarehouse] = useState('Main Warehouse');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
   const [returnType, setReturnType] = useState('');
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
@@ -76,32 +280,117 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [executiveRemarks, setExecutiveRemarks] = useState('');
   const [displayReturnId, setDisplayReturnId] = useState('');
+  const [lrNumber, setLrNumber] = useState('');
+  const [lrDate, setLrDate] = useState('');
+  const [finYear, setFinYear] = useState(defaultFinYear());
+  const [schoolCode, setSchoolCode] = useState('');
+  const [schoolType, setSchoolType] = useState('');
+  const [transport, setTransport] = useState('');
+  const [town, setTown] = useState('');
+  const [zone, setZone] = useState('');
+  const [cluster, setCluster] = useState('');
+  const [contactPerson, setContactPerson] = useState('');
+  const [contactMobile, setContactMobile] = useState('');
+  const [address, setAddress] = useState('');
+  const [remarks, setRemarks] = useState('');
 
   const isViewMode = existingReturn && existingReturn.status !== 'Draft';
-  const isEditDraft = existingReturn && existingReturn.status === 'Draft';
+
+  const applyCompletedDc = (order: any) => {
+    if (!order) return;
+    setCustomerName(order.school_name || '');
+    setSaleId(order.dc_code || order.linkedDcOrderId || '');
+    setDcOrderId(order.linkedDcOrderId || '');
+    setFinYear(order.year || defaultFinYear(order.createdAt));
+    setSchoolCode(order.school_code || '');
+    setSchoolType(order.school_type || '');
+    setTransport(order.transport_name || '');
+    setTown(order.location || order.city || '');
+    setZone(order.zone || '');
+    setCluster(order.cluster_code || '');
+    setContactPerson(order.contact_person || '');
+    setContactMobile(order.contact_mobile || '');
+    setAddress(order.address || '');
+    if (order.lrNo) setLrNumber(order.lrNo);
+    setProductRows(productsToRows(order));
+  };
+
+  const handleCompletedDcSelect = async (completedDcId: string) => {
+    setSelectedCompletedDcId(completedDcId);
+    const cached = completedDcs.find((o) => o._id === completedDcId);
+    if (cached) {
+      applyCompletedDc(cached);
+    } else {
+      setCustomerName('');
+      setSaleId('');
+      setDcOrderId('');
+      setProductRows([]);
+    }
+
+    try {
+      const fullDc = await apiService.get(`/dc/${completedDcId}`);
+      const enriched = mapCompletedDcToOption(fullDc);
+      if (enriched) {
+        applyCompletedDc(enriched);
+        setCompletedDcs((prev) =>
+          prev.map((o) => (o._id === completedDcId ? enriched : o))
+        );
+      }
+    } catch {
+      // Keep cached list data if detail fetch fails
+    }
+  };
+
+  const totalItemsReturned = productRows.filter((r) => parseInt(r.returnQty, 10) > 0).length;
+  const totalQuantity = productRows.reduce((s, r) => s + (parseInt(r.returnQty, 10) || 0), 0);
 
   useEffect(() => {
     (async () => {
       if (!user?._id) return;
       try {
         setLoading(true);
-        const [custRes, locRes] = await Promise.all([
-          apiService.get('/sales/customers').catch(() => []),
+        const [locRes, dcRes, prodRes] = await Promise.all([
           apiService.get('/warehouse/locations').catch(() => []),
+          apiService.get('/dc/completed').catch(() => []),
+          apiService.get('/products/active').catch(() => apiService.get('/products').catch(() => [])),
         ]);
-        setCustomers(Array.isArray(custRes) ? custRes : []);
-        setWarehouseLocations(Array.isArray(locRes) ? locRes : []);
+        const prodList = Array.isArray(prodRes) ? prodRes : prodRes?.data || [];
+        setAvailableProducts(
+          prodList.map((p: any) => p.productName || p.name || p.product).filter(Boolean)
+        );
+        const dcsRaw = Array.isArray(dcRes) ? dcRes : dcRes?.data || [];
+        setCompletedDcs(loadCompletedDcOptions(dcsRaw));
+        const locs = Array.isArray(locRes) ? locRes : [];
+        setWarehouseLocations(
+          locs.length > 0
+            ? locs.map((w: any) => (typeof w === 'string' ? w : w.name || w.location || String(w))).filter(Boolean)
+            : ['Main Warehouse', 'North Warehouse', 'South Warehouse', 'East Warehouse', 'West Warehouse']
+        );
         if (returnIdParam) {
           const ret = await apiService.get(`/stock-returns/${returnIdParam}`);
           setExistingReturn(ret);
           setDisplayReturnId(ret.returnId || '');
           setCustomerName(ret.customerName || '');
-          setSaleId(ret.saleId ? String(ret.saleId) : '');
+          setSaleId(ret.saleId ? String(ret.saleId) : ret.dcOrderId ? String(ret.dcOrderId._id || ret.dcOrderId) : '');
           setWarehouse(ret.warehouse || '');
           setReturnDate(ret.returnDate ? new Date(ret.returnDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
           setReturnType(ret.returnType || '');
           setExecutiveRemarks(ret.executiveRemarks || '');
           setEvidencePhotos(Array.isArray(ret.evidencePhotos) ? ret.evidencePhotos : []);
+          setLrNumber(ret.lrNumber || '');
+          setLrDate(ret.lrDate ? new Date(ret.lrDate).toISOString().split('T')[0] : '');
+          setFinYear(ret.finYear || defaultFinYear());
+          setSchoolCode(ret.schoolCode || '');
+          setSchoolType(ret.schoolType || '');
+          setTransport(ret.transport || '');
+          setTown(ret.town || '');
+          setZone(ret.zone || '');
+          setCluster(ret.cluster || '');
+          setContactPerson(ret.contactPerson || '');
+          setContactMobile(ret.contactMobile || '');
+          setAddress(ret.address || '');
+          setRemarks(ret.remarks || '');
+          setDcOrderId(ret.dcOrderId ? String(ret.dcOrderId._id || ret.dcOrderId) : '');
           if (ret.products && ret.products.length) {
             setProductRows(
               ret.products.map((p: any, i: number) => ({
@@ -109,6 +398,7 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
                 product: p.product || '',
                 soldQty: Number(p.soldQty) || 0,
                 returnQty: String(p.returnQty ?? ''),
+                unitPrice: String(p.unitPrice ?? ''),
                 reason: p.reason || '',
                 remarks: p.remarks || '',
               }))
@@ -116,6 +406,8 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
           }
         } else {
           setDisplayReturnId(`RET-${Date.now()}`);
+          setWarehouse('Main Warehouse');
+          setFinYear(defaultFinYear());
         }
       } catch (e: any) {
         Alert.alert('Error', e.message || 'Failed to load data');
@@ -125,46 +417,24 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
     })();
   }, [user?._id, returnIdParam]);
 
-  useEffect(() => {
-    if (!customerName || !user?._id) {
-      setSales([]);
-      setSaleId('');
-      setProductRows([]);
-      return;
-    }
-    (async () => {
-      try {
-        const list = await apiService.get(`/sales?assignedTo=${user._id}&customerName=${encodeURIComponent(customerName)}`);
-        setSales(Array.isArray(list) ? list : []);
-        setSaleId('');
-        setProductRows([]);
-      } catch {
-        setSales([]);
-      }
-    })();
-  }, [customerName, user?._id]);
-
-  useEffect(() => {
-    if (!saleId || !sales.length) {
-      setProductRows([]);
-      return;
-    }
-    const sale = sales.find((s) => s._id === saleId);
-    if (!sale) {
-      setProductRows([]);
-      return;
-    }
-    setProductRows([
+  const addProductRow = () => {
+    setProductRows((prev) => [
+      ...prev,
       {
-        id: `row-${sale._id}`,
-        product: sale.product || '',
-        soldQty: Number(sale.quantity) || 0,
+        id: `product-${Date.now()}`,
+        product: '',
+        soldQty: 0,
         returnQty: '',
+        unitPrice: '',
         reason: '',
         remarks: '',
       },
     ]);
-  }, [saleId, sales]);
+  };
+
+  const removeProductRow = (id: string) => {
+    setProductRows((prev) => prev.filter((r) => r.id !== id));
+  };
 
   const addPhoto = async () => {
     try {
@@ -231,7 +501,16 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
   });
   const evidenceRequired = returnType === 'Damaged' || returnType === 'Expired';
   const evidenceOk = !evidenceRequired || (evidencePhotos.length > 0 && (executiveRemarks || '').trim() !== '');
-  const canSubmit = productsValid && evidenceOk && returnDate && returnType && customerName && saleId;
+  const canSubmit =
+    productsValid &&
+    evidenceOk &&
+    returnDate &&
+    returnType &&
+    customerName &&
+    selectedCompletedDcId &&
+    warehouse &&
+    lrNumber.trim() &&
+    finYear.trim();
 
   const buildPayload = () => {
     const products = productRows
@@ -240,22 +519,37 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
         product: r.product,
         soldQty: r.soldQty,
         returnQty: parseInt(r.returnQty, 10) || 0,
+        unitPrice: parseFloat(r.unitPrice) || 0,
         reason: r.reason.trim(),
         remarks: r.remarks.trim(),
       }));
-    const totalQuantity = products.reduce((s, p) => s + p.returnQty, 0);
     return {
       returnId: existingReturn?.returnId || displayReturnId,
+      executiveName: user?.name || '',
       returnDate,
       returnType,
       customerName,
       warehouse: warehouse || undefined,
       saleId: saleId || undefined,
+      dcOrderId: dcOrderId || saleId || undefined,
+      lrNumber: lrNumber.trim(),
+      lrDate: lrDate || undefined,
+      finYear: finYear.trim(),
+      schoolCode,
+      schoolType,
+      transport,
+      town,
+      zone,
+      cluster,
+      contactPerson,
+      contactMobile,
+      address,
+      remarks,
       executiveRemarks: executiveRemarks.trim() || undefined,
       evidencePhotos,
       products,
       totalItems: products.length,
-      totalQuantity,
+      totalQuantity: products.reduce((s, p) => s + p.returnQty, 0),
     };
   };
 
@@ -285,7 +579,10 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
 
   const submitReturn = async () => {
     if (!canSubmit) {
-      Alert.alert('Validation', 'Please complete: Customer, Invoice, Return Date & Type, at least one product with Return Qty and Reason. For Damaged/Expired, add photo and remarks.');
+      Alert.alert(
+        'Validation',
+        'Please complete all required fields: Customer, Sale/DC, Warehouse, Return Date & Type, LR No, Fin Year, at least one product with Return Qty and Reason. For Damaged/Expired, add photo and remarks.'
+      );
       return;
     }
     setSaving(true);
@@ -315,253 +612,447 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
     );
   }
 
+  if (isViewMode && existingReturn) {
+    const saleIdDisplay = getSaleIdFromReturn(existingReturn);
+    const totalQty = getTotalQty(existingReturn, productRows);
+    const executiveDisplay =
+      existingReturn.executiveName || user?.name || '—';
+    const statusDisplay = existingReturn.status || '—';
+
+    return (
+      <ScreenShell title="View Stock Return" loading={false}>
+        <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+          <Text style={viewStyles.subtitle}>Return details (read-only)</Text>
+
+          <View style={viewStyles.grid}>
+            <ReadOnlyField label="Return ID" value={displayReturnId || '—'} />
+            <ReadOnlyField label="Sale ID" value={saleIdDisplay} />
+            <ReadOnlyField label="Return Type" value={cell(returnType)} />
+            <ReadOnlyField label="Return Status" value={statusDisplay} />
+            <ReadOnlyField label="Executive Name" value={executiveDisplay} />
+            <ReadOnlyField label="Customer Name" value={cell(customerName)} />
+            <ReadOnlyField label="LR No" value={cell(existingReturn.lrNumber)} />
+            <ReadOnlyField label="Fin Year" value={cell(existingReturn.finYear)} />
+            <ReadOnlyField label="School Code" value={cell(existingReturn.schoolCode)} />
+            <ReadOnlyField label="Transport" value={cell(existingReturn.transport)} />
+            <ReadOnlyField label="Remarks" value={cell(existingReturn.remarks)} />
+            <ReadOnlyField
+              label="Return Date"
+              value={returnDate ? formatDate(returnDate) : '—'}
+            />
+            <ReadOnlyField label="Total Quantity" value={String(totalQty)} />
+          </View>
+
+          <Text style={styles.sectionTitle}>Products</Text>
+          <View style={viewStyles.tableCard}>
+            <View style={styles.tableHeader}>
+              <Text style={[styles.th, viewStyles.colProduct]}>Product</Text>
+              <Text style={[styles.th, viewStyles.colQty]}>Sold Qty</Text>
+              <Text style={[styles.th, viewStyles.colQty]}>Return Qty</Text>
+              <Text style={[styles.th, viewStyles.colReason]}>Reason</Text>
+              <Text style={[styles.th, viewStyles.colRemarks]}>Remarks</Text>
+            </View>
+            {productRows.length === 0 ? (
+              <Text style={styles.emptyText}>No products</Text>
+            ) : (
+              productRows.map((row) => (
+                <View key={row.id} style={styles.tableRow}>
+                  <Text style={[styles.td, viewStyles.colProduct]} numberOfLines={1}>
+                    {row.product}
+                  </Text>
+                  <Text style={[styles.td, viewStyles.colQty]}>{row.soldQty}</Text>
+                  <Text style={[styles.td, viewStyles.colQty]}>{row.returnQty || '0'}</Text>
+                  <Text style={[styles.td, viewStyles.colReason]} numberOfLines={2}>
+                    {row.reason || '—'}
+                  </Text>
+                  <Text style={[styles.td, viewStyles.colRemarks]} numberOfLines={2}>
+                    {row.remarks || '—'}
+                  </Text>
+                </View>
+              ))
+            )}
+          </View>
+
+          <Text style={styles.sectionTitle}>Evidence Photos</Text>
+          {evidencePhotos.length > 0 ? (
+            <FlatList
+              horizontal
+              data={evidencePhotos}
+              keyExtractor={(item, i) => `${item}-${i}`}
+              renderItem={({ item, index }) => (
+                <View style={styles.photoWrap}>
+                  <Image
+                    source={{ uri: resolvePhotoUrl(item) }}
+                    style={viewStyles.evidencePhoto}
+                  />
+                  <Text style={viewStyles.photoCaption}>Evidence {index + 1}</Text>
+                </View>
+              )}
+            />
+          ) : (
+            <View style={viewStyles.noPhotoBox}>
+              <Text style={viewStyles.noPhotoText}>No photos</Text>
+            </View>
+          )}
+
+          <View style={viewStyles.grid}>
+            <ReadOnlyField
+              label="Created At"
+              value={formatDateTime(existingReturn.createdAt)}
+            />
+            <ReadOnlyField
+              label="Updated At"
+              value={formatDateTime(existingReturn.updatedAt)}
+            />
+          </View>
+
+          <TouchableOpacity style={viewStyles.closeButton} onPress={() => navigation.goBack()}>
+            <Text style={viewStyles.closeButtonText}>Close</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </ScreenShell>
+    );
+  }
+
   return (
     <ScreenShell
-      title="{returnIdParam ? (isViewMode ? 'View Return' : 'Edit Draft Return') : 'Add Return'}"
+      title={returnIdParam ? 'Edit Draft Return' : 'Add Stock Return'}
       loading={loading}
     >
-<View style={styles.stepTabs}>
-        {[1, 2, 3, 4].map((s) => (
-          <TouchableOpacity
-            key={s}
-            style={[styles.stepTab, step === s && styles.stepTabActive]}
-            onPress={() => !isViewMode && setStep(s)}
-          >
-            <Text style={[styles.stepTabText, step === s && styles.stepTabTextActive]}>{s}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
       <ScrollView ref={scrollRef} style={styles.content} contentContainerStyle={styles.contentContainer}>
-        {/* Step 1: Basic info */}
-        {step === 1 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Basic Return Information</Text>
-            <Text style={styles.readOnlyLabel}>Return ID</Text>
-            <Text style={styles.readOnlyValue}>{displayReturnId || '—'}</Text>
-            <Text style={styles.readOnlyLabel}>Executive Name</Text>
-            <Text style={styles.readOnlyValue}>{user?.name || '—'}</Text>
+        <Text style={formStyles.subtitle}>
+          Fill in the details to create a new stock return request
+        </Text>
 
-            <Text style={styles.label}>Customer / Outlet *</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={customerName}
-                onValueChange={setCustomerName}
-                style={styles.picker}
-                enabled={!isViewMode}
-                prompt="Select customer"
-              >
-                <Picker.Item label="Select customer" value="" />
-                {customers.map((c) => (
-                  <Picker.Item key={c} label={c} value={c} />
-                ))}
-              </Picker>
-            </View>
+        {/* Basic Return Information */}
+        <View style={formStyles.section}>
+          <Text style={styles.sectionTitle}>Basic Return Information</Text>
+          <Text style={styles.readOnlyLabel}>Return ID *</Text>
+          <Text style={styles.readOnlyValue}>{displayReturnId || '—'}</Text>
+          <Text style={styles.readOnlyLabel}>Executive Name *</Text>
+          <Text style={styles.readOnlyValue}>{user?.name || '—'}</Text>
 
-            <Text style={styles.label}>Original Invoice / Sale *</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={saleId}
-                onValueChange={setSaleId}
-                style={styles.picker}
-                enabled={!isViewMode && !!customerName}
-                prompt="Select sale"
-              >
-                <Picker.Item label="Select sale" value="" />
-                {sales.map((s) => (
-                  <Picker.Item
-                    key={s._id}
-                    label={`${s.product} × ${s.quantity} - ${formatDate(s.saleDate)}`}
-                    value={s._id}
-                  />
-                ))}
-              </Picker>
-            </View>
+          <ReadOnlyField label="Customer / Outlet *" value={customerName || '—'} />
 
-            <Text style={styles.label}>Warehouse</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={warehouse}
-                onValueChange={setWarehouse}
-                style={styles.picker}
-                enabled={!isViewMode}
-                prompt="Select warehouse"
-              >
-                <Picker.Item label="Select warehouse" value="" />
-                {warehouseLocations.map((w) => (
-                  <Picker.Item key={w} label={w} value={w} />
-                ))}
-              </Picker>
-            </View>
+          <WebSelect
+            label="Sale ID / DC Order *"
+            value={selectedCompletedDcId}
+            onValueChange={handleCompletedDcSelect}
+            placeholder="Select Sale/DC Order"
+            items={completedDcs.map((o) => ({
+              label: `${o.dc_code || o._id} - ${o.school_name}`,
+              value: o._id,
+            }))}
+          />
+          {completedDcs.length === 0 ? (
+            <Text style={styles.hint}>No completed DC orders found for your account.</Text>
+          ) : null}
 
-            <Text style={styles.label}>Return Date *</Text>
-            <WebInput
-              style={styles.input}
-              value={returnDate}
-              onChangeText={setReturnDate}
-              placeholder="YYYY-MM-DD"
-              editable={!isViewMode}
-            />
-            <Text style={styles.label}>Return Type *</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={returnType}
-                onValueChange={setReturnType}
-                style={styles.picker}
-                enabled={!isViewMode}
-                prompt="Select type"
-              >
-                <Picker.Item label="Select type" value="" />
-                {RETURN_TYPES.map((t) => (
-                  <Picker.Item key={t} label={t} value={t} />
-                ))}
-              </Picker>
-            </View>
-          </View>
-        )}
+          <WebSelect
+            label="Warehouse *"
+            value={warehouse}
+            onValueChange={setWarehouse}
+            placeholder="Select warehouse"
+            items={warehouseLocations.map((w) => ({ label: w, value: w }))}
+          />
 
-        {/* Step 2: Products */}
-        {step === 2 && (
-          <View style={styles.section}>
+          <DateField label="Return Date" value={returnDate} onChange={setReturnDate} required />
+
+          <WebSelect
+            label="Return Type *"
+            value={returnType}
+            onValueChange={setReturnType}
+            placeholder="Select return type"
+            items={RETURN_TYPES.map((t) => ({ label: t, value: t }))}
+          />
+        </View>
+
+        {/* School & dispatch details */}
+        <View style={formStyles.section}>
+          <Text style={styles.sectionTitle}>School & dispatch details</Text>
+          <Text style={styles.hint}>
+            School fields are filled from the selected DC. Hand stock to your delivery partner for return
+            to Main Warehouse; enter the LR No from their lorry receipt before you submit (required).
+          </Text>
+
+          <Text style={formStyles.label}>LR No *</Text>
+          <WebInput
+            style={styles.input}
+            value={lrNumber}
+            onChangeText={setLrNumber}
+            placeholder="Lorry receipt number from delivery partner"
+          />
+
+          <DateField label="LR Date" value={lrDate} onChange={setLrDate} required />
+
+          <Text style={formStyles.label}>Fin Year *</Text>
+          <WebInput
+            style={styles.input}
+            value={finYear}
+            onChangeText={setFinYear}
+            placeholder="e.g. 2025-26"
+          />
+
+          <Text style={formStyles.label}>School Code</Text>
+          <WebInput style={styles.input} value={schoolCode} onChangeText={setSchoolCode} placeholder="School code" />
+
+          <Text style={formStyles.label}>School Type</Text>
+          <WebInput style={styles.input} value={schoolType} onChangeText={setSchoolType} placeholder="School type" />
+
+          <Text style={formStyles.label}>Transport</Text>
+          <WebInput style={styles.input} value={transport} onChangeText={setTransport} placeholder="Transport name" />
+
+          <Text style={formStyles.label}>Town / Location</Text>
+          <WebInput style={styles.input} value={town} onChangeText={setTown} placeholder="Town or city" />
+
+          <Text style={formStyles.label}>Zone</Text>
+          <WebInput style={styles.input} value={zone} onChangeText={setZone} placeholder="Zone" />
+
+          <Text style={formStyles.label}>Cluster</Text>
+          <WebInput style={styles.input} value={cluster} onChangeText={setCluster} placeholder="Cluster code" />
+
+          <Text style={formStyles.label}>Contact Person</Text>
+          <WebInput style={styles.input} value={contactPerson} onChangeText={setContactPerson} placeholder="Contact person" />
+
+          <Text style={formStyles.label}>Contact Mobile</Text>
+          <WebInput style={styles.input} value={contactMobile} onChangeText={setContactMobile} placeholder="Mobile number" />
+
+          <Text style={formStyles.label}>Address</Text>
+          <WebInput style={styles.input} value={address} onChangeText={setAddress} placeholder="Delivery address" />
+
+          <Text style={formStyles.label}>Remarks (warehouse list)</Text>
+          <WebInput
+            style={[styles.input, styles.textArea]}
+            value={remarks}
+            onChangeText={setRemarks}
+            placeholder="Short note shown in warehouse executive remarks column"
+            multiline
+            numberOfLines={3}
+          />
+        </View>
+
+        {/* Product Selection */}
+        <View style={formStyles.section}>
+          <View style={formStyles.sectionHeaderRow}>
             <Text style={styles.sectionTitle}>Product Selection</Text>
-            <Text style={styles.hint}>Only products from the selected invoice. Return Qty ≤ Sold Qty. Reason required per product.</Text>
-            {productRows.length === 0 ? (
-              <Text style={styles.emptyText}>Select Customer and Sale in Step 1 first.</Text>
-            ) : (
-              <>
-                <View style={styles.tableHeader}>
-                  <Text style={[styles.th, styles.colProduct]}>Product</Text>
-                  <Text style={[styles.th, styles.colQty]}>Sold</Text>
-                  <Text style={[styles.th, styles.colQty]}>Return</Text>
-                  <Text style={[styles.th, styles.colReason]}>Reason</Text>
-                  <Text style={[styles.th, styles.colRemarks]}>Remarks</Text>
-                </View>
-                {productRows.map((row) => (
-                  <View key={row.id} style={styles.tableRow}>
-                    <Text style={[styles.td, styles.colProduct]} numberOfLines={1}>{row.product}</Text>
-                    <Text style={[styles.td, styles.colQty]}>{row.soldQty}</Text>
-                    <WebInput
-                      style={[styles.inputSmall, styles.colQty]}
-                      value={row.returnQty}
-                      onChangeText={(v) => /^\d*$/.test(v) && updateProductRow(row.id, 'returnQty', v)}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      editable={!isViewMode}
-                      maxLength={6}
-                    />
-                    <WebInput
-                      style={[styles.inputSmall, styles.colReason]}
-                      value={row.reason}
-                      onChangeText={(v) => updateProductRow(row.id, 'reason', v)}
-                      placeholder="Reason *"
-                      editable={!isViewMode}
-                    />
-                    <WebInput
-                      style={[styles.inputSmall, styles.colRemarks]}
-                      value={row.remarks}
-                      onChangeText={(v) => updateProductRow(row.id, 'remarks', v)}
-                      placeholder="Remarks"
-                      editable={!isViewMode}
-                    />
-                  </View>
-                ))}
-              </>
-            )}
-          </View>
-        )}
-
-        {/* Step 3: Evidence */}
-        {step === 3 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Evidence & Remarks</Text>
-            {(returnType === 'Damaged' || returnType === 'Expired') && (
-              <Text style={styles.warningText}>Photo and executive remarks are mandatory for Damaged/Expired.</Text>
-            )}
-            <Text style={styles.label}>Photos (product, batch, damage)</Text>
-            <TouchableOpacity style={styles.photoButton} onPress={addPhoto} disabled={isViewMode || uploadingPhoto}>
-              {uploadingPhoto ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.photoButtonText}>+ Add Photo</Text>}
+            <TouchableOpacity style={formStyles.addProductBtn} onPress={addProductRow}>
+              <Text style={formStyles.addProductBtnText}>+ Add Product</Text>
             </TouchableOpacity>
-            {evidencePhotos.length > 0 && (
-              <FlatList
-                horizontal
-                data={evidencePhotos}
-                keyExtractor={(item, i) => i.toString()}
-                renderItem={({ item, index }) => (
-                  <View style={styles.photoWrap}>
-                    <Image source={{ uri: item }} style={styles.photoThumb} />
-                    {!isViewMode && (
-                      <TouchableOpacity style={styles.photoRemove} onPress={() => removePhoto(index)}>
-                        <Text style={styles.photoRemoveText}>×</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
-              />
-            )}
-            <Text style={styles.label}>Executive remarks * (mandatory for Damaged/Expired)</Text>
-            <WebInput
-              style={[styles.input, styles.textArea]}
-              value={executiveRemarks}
-              onChangeText={setExecutiveRemarks}
-              placeholder="Remarks for warehouse"
-              multiline
-              numberOfLines={4}
-              editable={!isViewMode}
-            />
           </View>
-        )}
 
-        {/* Step 4: Summary & actions */}
-        {step === 4 && (() => {
-          const totalItems = productRows.filter((r) => parseInt(r.returnQty, 10) > 0).length;
-          const totalQty = productRows.reduce((s, r) => s + (parseInt(r.returnQty, 10) || 0), 0);
-          return (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Summary</Text>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Total items returned</Text>
-              <Text style={styles.summaryValue}>{totalItems}</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Total quantity</Text>
-              <Text style={styles.summaryValue}>{totalQty}</Text>
-            </View>
-            {existingReturn && (
-              <>
-                <Text style={styles.label}>Current Status</Text>
-                <Text style={styles.readOnlyValue}>{existingReturn.status}</Text>
-                <Text style={styles.label}>Next Action</Text>
-                <Text style={styles.readOnlyValue}>{NEXT_ACTION_BY_STATUS[existingReturn.status] || '—'}</Text>
-                <Text style={styles.label}>Created / Updated</Text>
-                <Text style={styles.readOnlyValue}>{formatDate(existingReturn.createdAt)} / {formatDate(existingReturn.updatedAt)}</Text>
-              </>
-            )}
-            {!isViewMode && (
-              <View style={styles.actions}>
-                <TouchableOpacity style={[styles.btn, styles.btnDraft]} onPress={saveDraft} disabled={saving}>
-                  {saving ? <ActivityIndicator color={colors.textPrimary} /> : <Text style={styles.btnDraftText}>Save as Draft</Text>}
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.btn, styles.btnSubmit]} onPress={submitReturn} disabled={saving || !canSubmit}>
-                  {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnSubmitText}>Submit Return Request</Text>}
-                </TouchableOpacity>
+          <ScrollView horizontal showsHorizontalScrollIndicator>
+            <View style={formStyles.productTable}>
+              <View style={formStyles.productTableHeader}>
+                <Text style={[formStyles.productTh, formStyles.colProductName]}>Product</Text>
+                <Text style={[formStyles.productTh, formStyles.colSoldQty]}>Sold Qty</Text>
+                <Text style={[formStyles.productTh, formStyles.colReturnQty]}>Return Qty</Text>
+                <Text style={[formStyles.productTh, formStyles.colUnitPrice]}>Unit Price</Text>
+                <Text style={[formStyles.productTh, formStyles.colReasonCell]}>Reason</Text>
+                <Text style={[formStyles.productTh, formStyles.colRemarksCell]}>Remarks</Text>
+                <Text style={[formStyles.productTh, formStyles.colActionCell]}>Action</Text>
               </View>
-            )}
-            {!canSubmit && !isViewMode && (
-              <Text style={styles.hint}>Complete all steps: select invoice, add products with return qty & reason, and evidence if Damaged/Expired.</Text>
-            )}
-          </View>
-          );
-        })()}
+              {productRows.length === 0 ? (
+                <View style={formStyles.productTableEmpty}>
+                  <Text style={styles.emptyText}>
+                    {selectedCompletedDcId
+                      ? 'No products on this DC. Tap + Add Product to add a row.'
+                      : 'Select Sale/DC Order above to load products, or tap + Add Product.'}
+                  </Text>
+                </View>
+              ) : (
+                productRows.map((row) => (
+                  <View key={row.id} style={formStyles.productTableRow}>
+                    <View style={formStyles.colProductName}>
+                      {row.product ? (
+                        <Text style={formStyles.productNameText} numberOfLines={1}>
+                          {row.product}
+                        </Text>
+                      ) : (
+                        <WebSelect
+                          label=""
+                          value={row.product}
+                          onValueChange={(v) => {
+                            updateProductRow(row.id, 'product', v);
+                            const dcOrder = completedDcs.find((o) => o._id === selectedCompletedDcId);
+                            const op = dcOrder?.products?.find((p: any) => (p.product_name || '') === v);
+                            if (op) {
+                              updateProductRow(row.id, 'soldQty', Number(op.quantity) || 0);
+                              updateProductRow(row.id, 'unitPrice', String(op.unit_price ?? op.price ?? ''));
+                            }
+                          }}
+                          placeholder="Select product"
+                          items={availableProducts.map((p) => ({ label: p, value: p }))}
+                        />
+                      )}
+                    </View>
+                    <View style={formStyles.colSoldQty}>
+                      <WebInput
+                        style={[formStyles.tableInput, formStyles.readOnlyInput]}
+                        value={String(row.soldQty)}
+                        editable={false}
+                      />
+                    </View>
+                    <View style={formStyles.colReturnQty}>
+                      <WebInput
+                        style={formStyles.tableInput}
+                        value={row.returnQty}
+                        onChangeText={(v) => /^\d*$/.test(v) && updateProductRow(row.id, 'returnQty', v)}
+                        keyboardType="numeric"
+                        placeholder="0"
+                      />
+                    </View>
+                    <View style={formStyles.colUnitPrice}>
+                      <WebInput
+                        style={formStyles.tableInput}
+                        value={row.unitPrice}
+                        onChangeText={(v) => /^\d*\.?\d*$/.test(v) && updateProductRow(row.id, 'unitPrice', v)}
+                        keyboardType="decimal-pad"
+                        placeholder=""
+                      />
+                    </View>
+                    <View style={formStyles.colReasonCell}>
+                      <WebSelect
+                        label=""
+                        value={row.reason}
+                        onValueChange={(v) => updateProductRow(row.id, 'reason', v)}
+                        placeholder="Select reason"
+                        items={RETURN_REASONS.map((r) => ({ label: r, value: r }))}
+                      />
+                    </View>
+                    <View style={formStyles.colRemarksCell}>
+                      <WebInput
+                        style={formStyles.tableInput}
+                        value={row.remarks}
+                        onChangeText={(v) => updateProductRow(row.id, 'remarks', v)}
+                        placeholder="Optional remarks"
+                      />
+                    </View>
+                    <View style={formStyles.colActionCell}>
+                      <TouchableOpacity onPress={() => removeProductRow(row.id)} style={formStyles.removeBtn}>
+                        <Text style={formStyles.removeBtnText}>×</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+          </ScrollView>
+        </View>
 
-        {step < 4 && !isViewMode && (
-          <TouchableOpacity style={styles.nextButton} onPress={() => setStep(step + 1)}>
-            <Text style={styles.nextButtonText}>Next →</Text>
+        {/* Evidence & Remarks */}
+        <View style={formStyles.section}>
+          <Text style={styles.sectionTitle}>
+            Evidence & Remarks
+            {evidenceRequired ? ' *' : ''}
+          </Text>
+          {evidenceRequired && (
+            <Text style={styles.warningText}>Photo and executive remarks are mandatory for Damaged/Expired.</Text>
+          )}
+          <Text style={formStyles.label}>Photo Upload</Text>
+          <TouchableOpacity style={styles.photoButton} onPress={addPhoto} disabled={uploadingPhoto}>
+            {uploadingPhoto ? (
+              <ActivityIndicator color={colors.primary} />
+            ) : (
+              <Text style={styles.photoButtonText}>+ Choose Photo</Text>
+            )}
           </TouchableOpacity>
-        )}
-        {step > 1 && (
-          <TouchableOpacity style={styles.backStepButton} onPress={() => setStep(step - 1)}>
-            <Text style={styles.backStepText}>← Back</Text>
+          {evidencePhotos.length > 0 && (
+            <FlatList
+              horizontal
+              data={evidencePhotos}
+              keyExtractor={(item, i) => i.toString()}
+              renderItem={({ item, index }) => (
+                <View style={styles.photoWrap}>
+                  <Image source={{ uri: resolvePhotoUrl(item) }} style={styles.photoThumb} />
+                  <TouchableOpacity style={styles.photoRemove} onPress={() => removePhoto(index)}>
+                    <Text style={styles.photoRemoveText}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
+          )}
+          <Text style={formStyles.label}>Executive Remarks</Text>
+          <WebInput
+            style={[styles.input, styles.textArea]}
+            value={executiveRemarks}
+            onChangeText={setExecutiveRemarks}
+            placeholder="Enter remarks about the return"
+            multiline
+            numberOfLines={4}
+          />
+        </View>
+
+        {/* Summary */}
+        <View style={formStyles.section}>
+          <Text style={styles.sectionTitle}>Summary</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Total Items Returned</Text>
+            <Text style={styles.summaryValue}>{totalItemsReturned}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Total Quantity</Text>
+            <Text style={styles.summaryValue}>{totalQuantity}</Text>
+          </View>
+        </View>
+
+        {/* Status & Tracking */}
+        <View style={formStyles.section}>
+          <Text style={styles.sectionTitle}>Status & Tracking</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Current Status</Text>
+            <Text style={styles.summaryValue}>{existingReturn?.status || 'Draft'}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Next Action</Text>
+            <Text style={styles.summaryValue}>
+              {existingReturn
+                ? NEXT_ACTION_BY_STATUS[existingReturn.status] || '—'
+                : 'Submit Return Request'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Actions */}
+        <View style={formStyles.actions}>
+          <View style={formStyles.actionsRow}>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnDraft, formStyles.actionBtnHalf]}
+              onPress={() => navigation.goBack()}
+            >
+              <Text style={formStyles.actionBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnDraft, formStyles.actionBtnHalf]}
+              onPress={saveDraft}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color={colors.textPrimary} />
+              ) : (
+                <Text style={formStyles.actionBtnText} numberOfLines={1}>
+                  Save as Draft
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={[styles.btn, styles.btnSubmit, formStyles.actionBtnFull]}
+            onPress={submitReturn}
+            disabled={saving || !canSubmit}
+          >
+            {saving ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={formStyles.actionBtnTextPrimary} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                Submit Return Request
+              </Text>
+            )}
           </TouchableOpacity>
+        </View>
+        {!canSubmit && (
+          <Text style={[styles.hint, { marginBottom: 24 }]}>
+            Complete required fields including LR No and Fin Year before submitting.
+          </Text>
         )}
       </ScrollView>
     </ScreenShell>
@@ -615,7 +1106,7 @@ const styles = StyleSheet.create({
   summaryLabel: { ...typography.body.medium, color: colors.textSecondary },
   summaryValue: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '600' },
   actions: { flexDirection: 'row', gap: 12, marginTop: 20 },
-  btn: { flex: 1, padding: 16, borderRadius: 12, alignItems: 'center' },
+  btn: { flex: 1, padding: 14, borderRadius: 12, alignItems: 'center', minWidth: 90 },
   btnDraft: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border },
   btnSubmit: { backgroundColor: colors.primary },
   btnDraftText: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '600' },
@@ -624,4 +1115,251 @@ const styles = StyleSheet.create({
   nextButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
   backStepButton: { padding: 12, alignItems: 'center', marginTop: 8 },
   backStepText: { ...typography.body.small, color: colors.primary },
+});
+
+const formStyles = StyleSheet.create({
+  subtitle: {
+    ...typography.body.medium,
+    color: colors.textSecondary,
+    marginBottom: 16,
+  },
+  section: {
+    marginBottom: 24,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  label: {
+    ...typography.body.medium,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  emptyBox: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 8,
+    padding: 16,
+    alignItems: 'center',
+  },
+  addProductBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.backgroundLight,
+  },
+  addProductBtnText: {
+    ...typography.body.small,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  productRow: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  productFieldsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  removeBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeBtnText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    lineHeight: 20,
+  },
+  productTable: {
+    minWidth: 860,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  productTableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.backgroundLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
+  productTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  productTableEmpty: {
+    padding: 20,
+    minWidth: 860,
+  },
+  productTh: {
+    ...typography.label.small,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  productNameText: {
+    ...typography.body.medium,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  colProductName: { width: 100, paddingRight: 8 },
+  colSoldQty: { width: 72, paddingRight: 8 },
+  colReturnQty: { width: 72, paddingRight: 8 },
+  colUnitPrice: { width: 80, paddingRight: 8 },
+  colReasonCell: { width: 130, paddingRight: 8 },
+  colRemarksCell: { width: 130, paddingRight: 8 },
+  colActionCell: { width: 44, alignItems: 'center' },
+  tableInput: {
+    backgroundColor: colors.backgroundLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: colors.textPrimary,
+    minHeight: 38,
+  },
+  readOnlyInput: {
+    backgroundColor: '#F8FAFC',
+  },
+  actions: {
+    gap: 10,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionBtnHalf: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+  },
+  actionBtnFull: {
+    width: '100%',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  actionBtnText: {
+    ...typography.body.medium,
+    fontSize: 14,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  actionBtnTextPrimary: {
+    ...typography.body.medium,
+    fontSize: 14,
+    color: colors.textLight,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+});
+
+const viewStyles = StyleSheet.create({
+  subtitle: {
+    ...typography.body.medium,
+    color: colors.textSecondary,
+    marginBottom: 16,
+  },
+  grid: {
+    gap: 12,
+    marginBottom: 20,
+  },
+  fieldWrap: {
+    marginBottom: 4,
+  },
+  fieldLabel: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  fieldBox: {
+    backgroundColor: colors.backgroundLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  fieldValue: {
+    ...typography.body.medium,
+    color: colors.textPrimary,
+  },
+  tableCard: {
+    backgroundColor: colors.backgroundLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    marginBottom: 20,
+  },
+  colProduct: { width: 72, paddingRight: 4 },
+  colQty: { width: 52, paddingRight: 4 },
+  colReason: { flex: 1, minWidth: 60 },
+  colRemarks: { flex: 1, minWidth: 56 },
+  evidencePhoto: {
+    width: 100,
+    height: 100,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  photoCaption: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  noPhotoBox: {
+    backgroundColor: colors.backgroundLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    padding: 24,
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  noPhotoText: {
+    ...typography.body.medium,
+    color: colors.textSecondary,
+  },
+  closeButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 24,
+  },
+  closeButtonText: {
+    ...typography.body.medium,
+    color: colors.textLight,
+    fontWeight: '600',
+  },
 });

@@ -1,38 +1,77 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, RefreshControl, ActivityIndicator, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { downloadStockReport } from '../../utils/downloadStockReport';
 
 interface StockItem {
   _id: string;
   productName: string;
+  productCode?: string;
   category?: string;
   level?: string;
   currentStock?: number;
-  status?: string;
+  minStock?: number;
+  maxStock?: number;
+  unitPrice?: number;
+  unit?: string;
   location?: string;
+  status?: string;
 }
 
-export default function ReportsStockScreen({ navigation }: any) {
+function normalizeItem(item: StockItem): StockItem {
+  return {
+    ...item,
+    currentStock: Number(item.currentStock) || 0,
+    minStock: Number(item.minStock) || 0,
+    maxStock: item.maxStock != null ? Number(item.maxStock) : undefined,
+    unitPrice: Number(item.unitPrice) || 0,
+    unit: item.unit || 'pcs',
+    status: item.status || 'In Stock',
+  };
+}
+
+export default function ReportsStockScreen() {
   const [items, setItems] = useState<StockItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
 
   useEffect(() => {
     loadStocks();
   }, []);
 
+  const buildQueryParams = () => {
+    const params = new URLSearchParams();
+    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (categoryFilter !== 'all') params.set('category', categoryFilter);
+    if (search.trim()) params.set('search', search.trim());
+    return params.toString();
+  };
+
   const loadStocks = async () => {
     try {
       setLoading(true);
-      const data = await apiService.get<any>('/warehouse');
+      const qs = buildQueryParams();
+      const data = await apiService.get<any>(`/warehouse${qs ? `?${qs}` : ''}`);
       const entries = Array.isArray(data) ? data : data?.data || [];
-      setItems(entries);
+      setItems(entries.map(normalizeItem));
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load stock');
       setItems([]);
@@ -47,129 +86,237 @@ export default function ReportsStockScreen({ navigation }: any) {
     loadStocks();
   };
 
+  const categories = useMemo(() => {
+    return Array.from(new Set(items.map((item) => item.category).filter(Boolean))).sort() as string[];
+  }, [items]);
+
   const summary = useMemo(() => {
     const total = items.length;
     const inStock = items.filter((item) => item.status === 'In Stock').length;
     const lowStock = items.filter((item) => item.status === 'Low Stock').length;
     const outStock = items.filter((item) => item.status === 'Out of Stock').length;
-    return { total, inStock, lowStock, outStock };
+    const totalQuantity = items.reduce((sum, item) => sum + (item.currentStock || 0), 0);
+    const totalValue = items.reduce((sum, item) => sum + (item.currentStock || 0) * (item.unitPrice || 0), 0);
+    return { total, inStock, lowStock, outStock, totalQuantity, totalValue };
   }, [items]);
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return items.filter((item) => {
       const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
+      const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;
       const matchesSearch =
         !term ||
         item.productName?.toLowerCase().includes(term) ||
+        item.productCode?.toLowerCase().includes(term) ||
         item.category?.toLowerCase().includes(term) ||
         item.location?.toLowerCase().includes(term);
-      return matchesStatus && matchesSearch;
+      return matchesStatus && matchesCategory && matchesSearch;
     });
-  }, [items, statusFilter, search]);
+  }, [items, statusFilter, categoryFilter, search]);
 
-  const statuses = ['all', 'In Stock', 'Low Stock', 'Out of Stock', 'Discontinued'];
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await downloadStockReport(buildQueryParams());
+    } catch (error: any) {
+      Alert.alert('Export failed', error.message || 'Could not export stock report');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <ScreenShell
       title="Stock Report"
+      subtitle="View and manage warehouse inventory"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
+      headerRight={
+        <TouchableOpacity
+          onPress={handleExport}
+          disabled={exporting}
+          style={styles.exportBtn}
+          activeOpacity={0.8}
+        >
+          {exporting ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <>
+              <Ionicons name="download-outline" size={16} color={colors.primary} />
+              <Text style={styles.exportText}>Export to Excel</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      }
     >
-<View style={styles.summaryRow}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Items</Text>
+      <View style={styles.summaryRow}>
+        <View style={[styles.summaryCard, styles.summaryBlue]}>
+          <Text style={styles.summaryLabel}>Total Items</Text>
           <Text style={styles.summaryValue}>{summary.total}</Text>
         </View>
-        <View style={styles.summaryCard}>
+        <View style={[styles.summaryCard, styles.summaryGreen]}>
           <Text style={styles.summaryLabel}>In Stock</Text>
           <Text style={[styles.summaryValue, { color: colors.success }]}>{summary.inStock}</Text>
         </View>
-        <View style={styles.summaryCard}>
+        <View style={[styles.summaryCard, styles.summaryYellow]}>
           <Text style={styles.summaryLabel}>Low Stock</Text>
           <Text style={[styles.summaryValue, { color: colors.warning }]}>{summary.lowStock}</Text>
         </View>
-        <View style={styles.summaryCard}>
+        <View style={[styles.summaryCard, styles.summaryRed]}>
           <Text style={styles.summaryLabel}>Out of Stock</Text>
           <Text style={[styles.summaryValue, { color: colors.error || '#ef4444' }]}>{summary.outStock}</Text>
         </View>
       </View>
-      <View style={styles.filters}>
-        <WebInput
-          style={styles.searchInput}
-          placeholder="Search product, category, or location" value={search}
-          onChangeText={setSearch}
-        />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
-          {statuses.map((status) => (
-            <TouchableOpacity
-              key={status}
-              style={[styles.filterChip, statusFilter === status && styles.filterChipActive]}
-              onPress={() => setStatusFilter(status)}
-            >
-              <Text style={[styles.filterChipText, statusFilter === status && styles.filterChipTextActive]}>
-                {status === 'all' ? 'All' : status}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+
+      <View style={styles.summaryRow}>
+        <View style={[styles.summaryCard, styles.summaryPurple]}>
+          <Text style={styles.summaryLabel}>Total Quantity</Text>
+          <Text style={[styles.summaryValue, { color: '#6D28D9' }]}>
+            {summary.totalQuantity.toLocaleString('en-IN')}
+          </Text>
+        </View>
+        <View style={[styles.summaryCard, styles.summaryIndigo]}>
+          <Text style={styles.summaryLabel}>Total Value</Text>
+          <Text style={[styles.summaryValue, { color: '#4338CA' }]}>
+            ₹{summary.totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          </Text>
+        </View>
       </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+
+      <PageSection title="Filters">
+        <WebInput placeholder="Search products..." value={search} onChangeText={setSearch} />
+        <View style={styles.filterRow}>
+          <View style={styles.filterField}>
+            <WebLabel>Status</WebLabel>
+            <WebSelect
+              value={statusFilter}
+              onValueChange={setStatusFilter}
+              items={[
+                { label: 'All Status', value: 'all' },
+                { label: 'In Stock', value: 'In Stock' },
+                { label: 'Low Stock', value: 'Low Stock' },
+                { label: 'Out of Stock', value: 'Out of Stock' },
+                { label: 'Discontinued', value: 'Discontinued' },
+              ]}
+            />
+          </View>
+          <View style={styles.filterField}>
+            <WebLabel>Category</WebLabel>
+            <WebSelect
+              value={categoryFilter}
+              onValueChange={setCategoryFilter}
+              items={[
+                { label: 'All Categories', value: 'all' },
+                ...categories.map((cat) => ({ label: cat, value: cat })),
+              ]}
+            />
+          </View>
+        </View>
+        <WebButton
+          title={loading ? 'Searching…' : 'Search'}
+          onPress={loadStocks}
+          disabled={loading}
+          loading={loading}
+        />
+      </PageSection>
+
+      <PageSection title={`Stock Items (${filtered.length})`}>
         {filtered.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>📦</Text>
             <Text style={styles.emptyText}>No stock items found</Text>
           </View>
         ) : (
-          filtered.map((item) => (
-            <View key={item._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.itemTitle}>{item.productName || 'Item'}</Text>
-                <Text style={styles.statusBadge}>{item.status || 'Unknown'}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View>
+              <View style={styles.tableHeader}>
+                {['Product', 'Code', 'Category', 'Stock', 'Min', 'Max', 'Price', 'Value', 'Location', 'Status'].map(
+                  (col) => (
+                    <Text key={col} style={styles.tableHeaderCell}>
+                      {col}
+                    </Text>
+                  )
+                )}
               </View>
-              <Text style={styles.infoLine}>Category: {item.category || '-'}</Text>
-              <Text style={styles.infoLine}>Level: {item.level || '-'}</Text>
-              <Text style={styles.infoLine}>Location: {item.location || '-'}</Text>
-              <Text style={styles.infoLine}>Current Stock: {item.currentStock ?? 0}</Text>
+              {filtered.map((item) => (
+                <View key={item._id} style={styles.tableRow}>
+                  <Text style={styles.tableCell}>{item.productName || '-'}</Text>
+                  <Text style={styles.tableCell}>{item.productCode || '-'}</Text>
+                  <Text style={styles.tableCell}>{item.category || '-'}</Text>
+                  <Text style={styles.tableCell}>
+                    {(item.currentStock || 0).toLocaleString('en-IN')} {item.unit}
+                  </Text>
+                  <Text style={styles.tableCell}>{(item.minStock || 0).toLocaleString('en-IN')}</Text>
+                  <Text style={styles.tableCell}>
+                    {item.maxStock != null ? item.maxStock.toLocaleString('en-IN') : '-'}
+                  </Text>
+                  <Text style={styles.tableCell}>₹{(item.unitPrice || 0).toLocaleString('en-IN')}</Text>
+                  <Text style={styles.tableCell}>
+                    ₹{((item.currentStock || 0) * (item.unitPrice || 0)).toLocaleString('en-IN', {
+                      maximumFractionDigits: 0,
+                    })}
+                  </Text>
+                  <Text style={styles.tableCell}>{item.location || '-'}</Text>
+                  <Text style={styles.tableCell}>{item.status || '-'}</Text>
+                </View>
+              ))}
             </View>
-          ))
+          </ScrollView>
         )}
-      </ScrollView>
+      </PageSection>
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 10 },
-  summaryCard: { flex: 1, minWidth: 140, padding: 12, borderRadius: 12, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border },
+  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 10 },
+  summaryCard: {
+    flex: 1,
+    minWidth: 140,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  summaryBlue: { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
+  summaryGreen: { backgroundColor: '#ECFDF5', borderColor: '#BBF7D0' },
+  summaryYellow: { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+  summaryRed: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
+  summaryPurple: { backgroundColor: '#F5F3FF', borderColor: '#DDD6FE' },
+  summaryIndigo: { backgroundColor: '#EEF2FF', borderColor: '#C7D2FE' },
   summaryLabel: { ...typography.label.medium, color: colors.textSecondary },
-  summaryValue: { ...typography.heading.h3, color: colors.textPrimary },
-  filters: { paddingHorizontal: 16, paddingBottom: 12 },
-  searchInput: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, color: colors.textPrimary },
-  filterScroll: { marginTop: 10 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
-  filterChipActive: { backgroundColor: colors.primary + '20', borderColor: colors.primary },
-  filterChipText: { ...typography.body.medium, color: colors.textPrimary },
-  filterChipTextActive: { color: colors.primary, fontWeight: '600' },
-  content: { flex: 1, paddingHorizontal: 16 },
-  emptyContainer: { alignItems: 'center', marginTop: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 12 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  itemTitle: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  statusBadge: { ...typography.label.small, color: colors.primary, borderWidth: 1, borderColor: colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  infoLine: { ...typography.body.medium, color: colors.textSecondary, marginTop: 4 },
+  summaryValue: { ...typography.heading.h3, color: colors.textPrimary, marginTop: 4 },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 12, marginBottom: 12 },
+  filterField: { flex: 1, minWidth: 160 },
+  emptyContainer: { alignItems: 'center', paddingVertical: 32 },
+  emptyIcon: { fontSize: 48, marginBottom: 8 },
+  emptyText: { ...typography.body.medium, color: colors.textSecondary },
+  tableHeader: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 8 },
+  tableHeaderCell: {
+    width: 110,
+    ...typography.label.small,
+    color: colors.textSecondary,
+    fontWeight: '700',
+    paddingRight: 8,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: 10,
+  },
+  tableCell: { width: 110, ...typography.body.small, color: colors.textPrimary, paddingRight: 8 },
+  exportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.backgroundLight,
+  },
+  exportText: { ...typography.label.small, color: colors.primary, fontWeight: '600' },
 });
-
-

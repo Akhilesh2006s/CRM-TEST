@@ -1,10 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, RefreshControl, Alert, ActivityIndicator, Modal } from 'react-native';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  ActivityIndicator,
+  Modal,
+} from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+
+function cell(value: string | number | undefined | null) {
+  if (value === undefined || value === null || value === '') return '-';
+  return String(value);
+}
 
 export default function WarehouseStockScreen({ navigation }: any) {
   const [items, setItems] = useState<any[]>([]);
@@ -70,11 +85,15 @@ export default function WarehouseStockScreen({ navigation }: any) {
     }
   };
 
-  const filtered = items.filter((i) => {
+  const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return [i.productName, i.category, i.level, i.itemType].filter(Boolean).some((v) => v!.toString().toLowerCase().includes(q));
-  });
+    if (!q) return items;
+    return items.filter((i) =>
+      [i.productName, i.category, i.level, i.specs, i.subject, i.location]
+        .filter(Boolean)
+        .some((v) => v!.toString().toLowerCase().includes(q)),
+    );
+  }, [items, search]);
 
   return (
     <ScreenShell
@@ -83,57 +102,78 @@ export default function WarehouseStockScreen({ navigation }: any) {
       refreshing={refreshing}
       onRefresh={onRefresh}
     >
-<View style={styles.searchContainer}>
-        <WebInput style={styles.searchInput} value={search} onChangeText={setSearch} placeholder="Search products..." />
+      <View style={styles.searchSection}>
+        <Text style={styles.searchLabel}>Search</Text>
+        <WebInput
+          style={styles.searchInput}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search by product, category, level, specs, subject"
+        />
       </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
         {filtered.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📦</Text>
-            <Text style={styles.emptyText}>No stock items found</Text>
+            <Text style={styles.emptyText}>No items found.</Text>
           </View>
         ) : (
-          filtered.map((item) => (
+          filtered.map((item, idx) => (
             <View key={item._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.itemName}>{item.productName || 'N/A'}</Text>
-                <View style={[styles.stockBadge, { backgroundColor: (item.currentStock || 0) > 0 ? colors.success + '20' : colors.warning + '20' }]}>
-                  <Text style={[styles.stockBadgeText, { color: (item.currentStock || 0) > 0 ? colors.success : colors.warning }]}>
-                    Stock: {item.currentStock || 0}
-                  </Text>
-                </View>
+              <View style={styles.cardTop}>
+                <Text style={styles.serial}>#{idx + 1}</Text>
+                <Text style={styles.productName}>{item.productName || '-'}</Text>
+                <Text style={styles.qtyLabel}>
+                  Available Qty:{' '}
+                  <Text style={styles.qtyValue}>{item.currentStock ?? 0}</Text>
+                </Text>
               </View>
-              <View style={styles.cardBody}>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Category:</Text>
-                  <Text style={styles.infoValue}>{item.category || '-'}</Text>
-                </View>
-                {item.level && (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoLabel}>Level:</Text>
-                    <Text style={styles.infoValue}>{item.level}</Text>
-                  </View>
-                )}
+
+              <View style={styles.grid}>
+                <InfoCell label="Product Category" value={cell(item.category)} />
+                <InfoCell label="Level" value={cell(item.level || item.location)} />
+                <InfoCell label="Specs" value={cell(item.specs)} />
+                <InfoCell label="Subject" value={cell(item.subject)} />
               </View>
+
               <TouchableOpacity style={styles.addQtyButton} onPress={() => openAddQty(item)}>
-                <Text style={styles.addQtyButtonText}>Add Quantity</Text>
+                <Text style={styles.addQtyButtonText}>Add Item Qty</Text>
               </TouchableOpacity>
             </View>
           ))
         )}
       </ScrollView>
+
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add Quantity</Text>
+            <Text style={styles.modalTitle}>Add Item Qty</Text>
             <Text style={styles.modalSubtitle}>{selectedItem?.productName || 'Item'}</Text>
-            <WebInput style={styles.modalInput} value={quantity} onChangeText={setQuantity} placeholder="Enter quantity" keyboardType="decimal-pad" />
+            <WebInput
+              style={styles.modalInput}
+              value={quantity}
+              onChangeText={setQuantity}
+              placeholder="Enter quantity"
+              keyboardType="decimal-pad"
+            />
             <View style={styles.modalButtons}>
               <TouchableOpacity style={styles.modalCancelButton} onPress={() => setModalVisible(false)}>
                 <Text style={styles.modalCancelButtonText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalSubmitButton, submitting && styles.modalSubmitButtonDisabled]} onPress={submitAddQty} disabled={submitting}>
-                {submitting ? <ActivityIndicator color={colors.textLight} /> : <Text style={styles.modalSubmitButtonText}>Add</Text>}
+              <TouchableOpacity
+                style={[styles.modalSubmitButton, submitting && styles.modalSubmitButtonDisabled]}
+                onPress={submitAddQty}
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <ActivityIndicator color={colors.textLight} />
+                ) : (
+                  <Text style={styles.modalSubmitButtonText}>Add</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -143,45 +183,103 @@ export default function WarehouseStockScreen({ navigation }: any) {
   );
 }
 
+function InfoCell({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoCell}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  addButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' },
-  addIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  searchContainer: { padding: 16, backgroundColor: colors.backgroundLight, borderBottomWidth: 1, borderBottomColor: colors.border },
-  searchInput: { ...typography.body.medium, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12, color: colors.textPrimary },
-  content: { flex: 1, padding: 16 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 16 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: colors.shadowDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  itemName: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  stockBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  stockBadgeText: { ...typography.label.small, fontWeight: '600' },
-  cardBody: { marginBottom: 12 },
-  infoRow: { flexDirection: 'row', marginBottom: 6 },
-  infoLabel: { ...typography.body.medium, color: colors.textSecondary, width: 100 },
-  infoValue: { ...typography.body.medium, color: colors.textPrimary, flex: 1 },
-  addQtyButton: { paddingVertical: 10, borderRadius: 8, backgroundColor: colors.primary, alignItems: 'center' },
-  addQtyButtonText: { ...typography.label.medium, color: colors.textLight, fontWeight: '600' },
+  searchSection: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: colors.backgroundLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: 8,
+  },
+  searchLabel: { ...typography.label.medium, color: colors.textPrimary },
+  searchInput: {
+    ...typography.body.medium,
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    color: colors.textPrimary,
+  },
+  content: { flex: 1 },
+  contentContainer: { padding: 16, paddingBottom: 40 },
+  emptyContainer: { paddingVertical: 48, alignItems: 'center' },
+  emptyText: { ...typography.body.medium, color: colors.textSecondary },
+  card: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    marginBottom: 12,
+  },
+  cardTop: { marginBottom: 12 },
+  serial: { ...typography.label.small, color: colors.textSecondary, marginBottom: 4 },
+  productName: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 4 },
+  qtyLabel: { ...typography.body.small, color: colors.textSecondary },
+  qtyValue: { fontWeight: '700', color: colors.textPrimary },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 14,
+  },
+  infoCell: { width: '47%' },
+  infoLabel: { ...typography.label.small, color: colors.textSecondary, marginBottom: 2 },
+  infoValue: { ...typography.body.medium, color: colors.textPrimary },
+  addQtyButton: {
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#DC2626',
+    alignItems: 'center',
+  },
+  addQtyButtonText: { ...typography.label.medium, color: '#FFFFFF', fontWeight: '600' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
+  modalContent: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 40,
+  },
   modalTitle: { ...typography.heading.h2, color: colors.textPrimary, marginBottom: 8 },
   modalSubtitle: { ...typography.body.medium, color: colors.textSecondary, marginBottom: 20 },
-  modalInput: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, color: colors.textPrimary, marginBottom: 20 },
+  modalInput: {
+    ...typography.body.medium,
+    backgroundColor: colors.backgroundLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 14,
+    color: colors.textPrimary,
+    marginBottom: 20,
+  },
   modalButtons: { flexDirection: 'row', gap: 12 },
-  modalCancelButton: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: colors.backgroundLight, alignItems: 'center' },
+  modalCancelButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: colors.backgroundLight,
+    alignItems: 'center',
+  },
   modalCancelButtonText: { ...typography.label.medium, color: colors.textPrimary, fontWeight: '600' },
-  modalSubmitButton: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: colors.primary, alignItems: 'center' },
+  modalSubmitButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#DC2626',
+    alignItems: 'center',
+  },
   modalSubmitButtonDisabled: { opacity: 0.6 },
   modalSubmitButtonText: { ...typography.label.medium, color: colors.textLight, fontWeight: '600' },
 });
-
-

@@ -36,11 +36,17 @@ type ProductRow = {
   product: string;
   class: string;
   category: string;
+  productCategory?: string;
   specs: string;
   subject?: string;
   strength: number;
   level: string;
   term: string;
+};
+
+const dash = (v?: string | null) => {
+  const s = String(v || '').trim();
+  return s || '-';
 };
 
 type DcOrderData = {
@@ -68,6 +74,102 @@ type DcOrderData = {
     pincode?: string;
   };
 };
+
+function toYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmd(value?: string) {
+  if (!value) return new Date();
+  const d = new Date(value.includes('T') ? value : `${value}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+  showPicker,
+  setShowPicker,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  showPicker: boolean;
+  setShowPicker: (v: boolean) => void;
+}) {
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.fieldContainer}>
+        <Text style={styles.label}>{label}</Text>
+        {React.createElement('input', {
+          type: 'date',
+          value: value || '',
+          onChange: (e: any) => onChange(e.target.value || ''),
+          style: {
+            width: '100%',
+            padding: 12,
+            borderRadius: 12,
+            border: '1px solid #E2E8F0',
+            fontSize: 16,
+            backgroundColor: '#fff',
+            color: '#1E293B',
+            boxSizing: 'border-box',
+          },
+        })}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.fieldContainer}>
+      <Text style={styles.label}>{label}</Text>
+      <TouchableOpacity style={styles.dateTouchable} onPress={() => setShowPicker(true)} activeOpacity={0.7}>
+        <Text style={[styles.dateText, !value && styles.placeholderText]}>{value || 'Tap to pick date'}</Text>
+        <Text style={styles.calendarIcon}>📅</Text>
+      </TouchableOpacity>
+      {showPicker && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={parseYmd(value)}
+          mode="date"
+          display="default"
+          onChange={(event, d) => {
+            setShowPicker(false);
+            if (event.type === 'set' && d) onChange(toYmd(d));
+          }}
+        />
+      ) : null}
+      {showPicker && Platform.OS === 'ios' ? (
+        <Modal visible transparent animationType="slide">
+          <TouchableOpacity
+            style={styles.datePickerOverlay}
+            activeOpacity={1}
+            onPress={() => setShowPicker(false)}
+          />
+          <View style={styles.datePickerBox}>
+            <View style={styles.datePickerHeader}>
+              <Text style={styles.datePickerTitle}>{label}</Text>
+              <TouchableOpacity onPress={() => setShowPicker(false)}>
+                <Text style={styles.doneText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <DateTimePicker
+              value={parseYmd(value)}
+              mode="date"
+              display="spinner"
+              onChange={(_, d) => {
+                if (d) onChange(toYmd(d));
+              }}
+            />
+          </View>
+        </Modal>
+      ) : null}
+    </View>
+  );
+}
 
 export default function DCPendingOpenScreen({ navigation, route }: any) {
   const dcId = route?.params?.dcId as string | undefined;
@@ -170,12 +272,13 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
           fullDC.productDetails.map((p: any, idx: number) => ({
             id: String(idx + 1),
             product: p.product || p.productName || 'Abacus',
-            class: p.class || '1',
-            category: p.category || 'New Students',
-            specs: p.specs || 'Regular',
+            class: p.class != null && String(p.class).trim() ? String(p.class) : '1',
+            category: p.category || 'new Students',
+            productCategory: p.productCategory || undefined,
+            specs: p.specs || '',
             subject: p.subject,
             strength: Number(p.strength) ?? Number(p.quantity) ?? 0,
-            level: p.level || 'L1',
+            level: p.level || '',
             term: p.term || 'Term 1',
           }))
         );
@@ -219,22 +322,6 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
 
   const getDefaultLevel = (productName: string) => getProductLevels(productName)[0] || 'L1';
 
-  const addProductRow = () => {
-    setProductRows((prev) => [
-      ...prev,
-      {
-        id: String(Date.now()),
-        product: 'Abacus',
-        class: '1',
-        category: 'New Students',
-        specs: 'Regular',
-        strength: 0,
-        level: 'L1',
-        term: 'Term 1',
-      },
-    ]);
-  };
-
   const updateProductRow = (id: string, field: keyof ProductRow, value: any) => {
     setProductRows((prev) =>
       prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
@@ -245,10 +332,45 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
     setProductRows((prev) => prev.filter((r) => r.id !== id));
   };
 
+  const validateDcDetails = (): boolean => {
+    if (!financeRemarks.trim()) {
+      setErrorMessage('Finance Remarks * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    if (!splApproval.trim()) {
+      setErrorMessage('SPL Approval * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    if (!dcDate.trim()) {
+      setErrorMessage('DC Date * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    if (!dcRemarks.trim()) {
+      setErrorMessage('DC Remarks * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    if (!dcCategory.trim()) {
+      setErrorMessage('DC Category * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    if (!dcNotes.trim()) {
+      setErrorMessage('DC Notes * is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return false;
+    }
+    return true;
+  };
+
   const handleSave = async () => {
     if (!dc) return;
     setErrorMessage(null);
     setSuccessMessage(null);
+    if (!validateDcDetails()) return;
 
     setSaving(true);
     try {
@@ -256,12 +378,13 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
       const productDetails = productRows.map((row) => ({
         product: row.product,
         class: row.class || '1',
-        category: row.category || 'New Students',
+        category: row.category || 'new Students',
+        productCategory: row.productCategory || undefined,
         productName: row.product,
         quantity: Number(row.strength) || 0,
         strength: Number(row.strength) || 0,
-        level: row.level || 'L1',
-        specs: row.specs || 'Regular',
+        level: row.level || '',
+        specs: row.specs || '',
         subject: row.subject,
         term: row.term || 'Term 1',
       }));
@@ -290,6 +413,9 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
 
   const handleSubmitToWarehouse = async () => {
     if (!dc) return;
+    setErrorMessage(null);
+    if (!validateDcDetails()) return;
+
     const totalQuantity = productRows.reduce((sum, row) => sum + (Number(row.strength) || 0), 0);
     if (totalQuantity <= 0) {
       setErrorMessage('Please add at least one product with quantity (Strength) > 0');
@@ -297,18 +423,18 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
       return;
     }
 
-    setErrorMessage(null);
     setSubmitting(true);
     try {
       const productDetails = productRows.map((row) => ({
         product: row.product,
         class: row.class || '1',
-        category: row.category || 'New Students',
+        category: row.category || 'new Students',
+        productCategory: row.productCategory || undefined,
         productName: row.product,
         quantity: Number(row.strength) || 0,
         strength: Number(row.strength) || 0,
-        level: row.level || 'L1',
-        specs: row.specs || 'Regular',
+        level: row.level || '',
+        specs: row.specs || '',
         subject: row.subject,
         term: row.term || 'Term 1',
       }));
@@ -453,166 +579,95 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
         {/* DC Details (editable) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>DC Details</Text>
-          <FormField label="Finance Remarks" value={financeRemarks} onChangeText={setFinanceRemarks} placeholder="Finance Remarks" />
-          <FormField label="SPL Approval" value={splApproval} onChangeText={setSplApproval} placeholder="Special Approval" />
+          <FormField label="Finance Remarks *" value={financeRemarks} onChangeText={setFinanceRemarks} placeholder="Finance Remarks" />
+          <FormField label="SPL Approval *" value={splApproval} onChangeText={setSplApproval} placeholder="Special Approval" />
+          <DateField
+            label="DC Date *"
+            value={dcDate}
+            onChange={setDcDate}
+            showPicker={showDcDatePicker}
+            setShowPicker={setShowDcDatePicker}
+          />
+          <FormField label="DC Remarks *" value={dcRemarks} onChangeText={setDcRemarks} placeholder="DC Remarks" />
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>DC Date</Text>
-            <TouchableOpacity style={styles.dateTouchable} onPress={() => setShowDcDatePicker(true)}>
-              <Text style={[styles.dateText, !dcDate && styles.placeholderText]}>{dcDate || 'Tap to pick date'}</Text>
-              <Text style={styles.calendarIcon}>📅</Text>
-            </TouchableOpacity>
-          </View>
-          {showDcDatePicker && (
-            <Modal visible transparent animationType="slide">
-              <TouchableOpacity style={styles.datePickerOverlay} activeOpacity={1} onPress={() => setShowDcDatePicker(false)} />
-              <View style={styles.datePickerBox}>
-                <View style={styles.datePickerHeader}>
-                  <Text style={styles.datePickerTitle}>DC Date</Text>
-                  <TouchableOpacity onPress={() => setShowDcDatePicker(false)}>
-                    <Text style={styles.doneText}>Done</Text>
-                  </TouchableOpacity>
-                </View>
-                <DateTimePicker
-                  value={dcDate ? new Date(dcDate) : new Date()}
-                  mode="date"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'calendar'}
-                  onChange={(_, d) => {
-                    if (d) setDcDate(d.toISOString().split('T')[0]);
-                    if (Platform.OS === 'android') setShowDcDatePicker(false);
-                  }}
-                />
-              </View>
-            </Modal>
-          )}
-          <FormField label="DC Remarks" value={dcRemarks} onChangeText={setDcRemarks} placeholder="DC Remarks" />
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>DC Category</Text>
+            <Text style={styles.label}>DC Category *</Text>
             <View style={styles.pickerWrap}>
               <Picker selectedValue={dcCategory} onValueChange={setDcCategory} style={styles.picker}>
+                <Picker.Item label="Select DC Category *" value="" />
                 {DC_CATEGORIES.map((c) => (
                   <Picker.Item key={c} label={c} value={c} />
                 ))}
               </Picker>
             </View>
           </View>
-          <FormField label="DC Notes" value={dcNotes} onChangeText={setDcNotes} placeholder="Notes" />
+          <FormField label="DC Notes *" value={dcNotes} onChangeText={setDcNotes} placeholder="Notes" />
         </View>
 
         {/* Products */}
         <View style={styles.section}>
-          <View style={styles.sectionRow}>
-            <Text style={styles.sectionTitle}>Products</Text>
-            <TouchableOpacity style={styles.addProductButton} onPress={addProductRow}>
-              <Text style={styles.addProductButtonText}>+ Add</Text>
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.sectionTitle}>Products</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator style={styles.tableScroll}>
             <View style={styles.tableWrap}>
               <View style={styles.tableHeader}>
                 <Text style={[styles.th, styles.colProduct]}>Product</Text>
                 <Text style={[styles.th, styles.colClass]}>Class</Text>
                 <Text style={[styles.th, styles.colCategory]}>Category</Text>
+                <Text style={[styles.th, styles.colProductCategory]}>Product Category</Text>
                 <Text style={[styles.th, styles.colSpecs]}>Specs</Text>
                 <Text style={[styles.th, styles.colSubject]}>Subject</Text>
-                <Text style={[styles.th, styles.colStrength]}>Strength</Text>
+                <Text style={[styles.th, styles.colQty]}>Quantity</Text>
                 <Text style={[styles.th, styles.colLevel]}>Level</Text>
                 <Text style={[styles.th, styles.colTerm]}>Term</Text>
                 <Text style={[styles.th, styles.colAction]}>Action</Text>
               </View>
               {productRows.map((row) => (
                 <View key={row.id} style={styles.tableRow}>
-                  <View style={[styles.td, styles.tdPickerWrap, styles.colProduct]}>
-                    <Picker
-                      selectedValue={row.product}
-                      onValueChange={(v) => {
-                        updateProductRow(row.id, 'product', v);
-                        updateProductRow(row.id, 'level', getDefaultLevel(v));
-                      }}
-                      style={styles.tablePicker}
-                      color="#111827"
-                    >
-                      {products.length
-                        ? products.map((p: any) => (
-                            <Picker.Item
-                              key={p._id}
-                              label={p.productName || p.name || p.product || 'Abacus'}
-                              value={p.productName || p.name || p.product || 'Abacus'}
-                            />
-                          ))
-                        : (
-                            <Picker.Item label="Abacus" value="Abacus" />
-                          )}
-                    </Picker>
-                  </View>
-                  <View style={[styles.td, styles.tdPickerWrap, styles.colClass]}>
-                    <Picker selectedValue={row.class} onValueChange={(v) => updateProductRow(row.id, 'class', v)} style={styles.tablePicker} color="#111827">
-                      {CLASSES.map((c) => (
-                        <Picker.Item key={c} label={c} value={c} />
-                      ))}
-                    </Picker>
-                  </View>
-                  <View style={[styles.td, styles.tdPickerWrap, styles.colCategory]}>
-                    <Picker selectedValue={row.category} onValueChange={(v) => updateProductRow(row.id, 'category', v)} style={styles.tablePicker} color="#111827">
-                      {CATEGORIES.map((c) => (
-                        <Picker.Item key={c} label={c} value={c} />
-                      ))}
-                    </Picker>
-                  </View>
+                  <Text style={[styles.tdText, styles.colProduct]} numberOfLines={1}>
+                    {dash(row.product)}
+                  </Text>
                   <WebInput
-                    style={[styles.tableInput, styles.colSpecs]}
-                    value={row.specs}
-                    onChangeText={(v) => updateProductRow(row.id, 'specs', v)}
-                    placeholder="Specs"
+                    style={[styles.tableInput, styles.colClass]}
+                    value={row.class}
+                    onChangeText={(v) => updateProductRow(row.id, 'class', v)}
+                    placeholder="Class"
                   />
+                  <Text style={[styles.tdText, styles.colCategory]} numberOfLines={1}>
+                    {dash(row.category)}
+                  </Text>
+                  <Text style={[styles.tdText, styles.colProductCategory]} numberOfLines={1}>
+                    {dash(row.productCategory)}
+                  </Text>
+                  <Text style={[styles.tdText, styles.colSpecs]} numberOfLines={1}>
+                    {dash(row.specs)}
+                  </Text>
+                  <Text style={[styles.tdText, styles.colSubject]} numberOfLines={1}>
+                    {dash(row.subject)}
+                  </Text>
                   <WebInput
-                    style={[styles.tableInput, styles.colSubject]}
-                    value={row.subject || ''}
-                    onChangeText={(v) => updateProductRow(row.id, 'subject', v)}
-                    placeholder="Subject"
-                  />
-                  <WebInput
-                    style={[styles.tableInput, styles.colStrength]}
-                    value={String(row.strength)}
+                    style={[styles.tableInput, styles.colQty]}
+                    value={String(row.strength || '')}
                     onChangeText={(v) => updateProductRow(row.id, 'strength', Number(v) || 0)}
                     keyboardType="numeric"
                     placeholder="0"
                   />
-                  <View style={[styles.td, styles.tdPickerWrap, styles.colLevel]}>
-                    <Picker
-                      selectedValue={row.level}
-                      onValueChange={(v) => updateProductRow(row.id, 'level', v)}
-                      style={styles.tablePicker}
-                      color="#111827"
-                    >
-                      {getProductLevels(row.product).map((l) => (
-                        <Picker.Item key={l} label={l} value={l} />
-                      ))}
-                    </Picker>
-                  </View>
-                  <View style={[styles.td, styles.tdPickerWrap, styles.colTerm]}>
-                    {isTermWiseDc ? (
-                      <Text style={styles.termReadOnly}>{row.term || 'Term 1'}</Text>
-                    ) : (
-                      <Picker
-                        selectedValue={row.term || 'Term 1'}
-                        onValueChange={(v) => updateProductRow(row.id, 'term', v)}
-                        style={styles.tablePicker}
-                        color="#111827"
-                      >
-                        {TERMS.map((t) => (
-                          <Picker.Item key={t} label={t} value={t} />
-                        ))}
-                      </Picker>
-                    )}
-                  </View>
+                  <Text style={[styles.tdText, styles.colLevel]} numberOfLines={1}>
+                    {dash(row.level)}
+                  </Text>
+                  <Text style={[styles.tdText, styles.colTerm]} numberOfLines={1}>
+                    {dash(row.term || 'Term 1')}
+                  </Text>
                   <TouchableOpacity style={[styles.td, styles.colAction]} onPress={() => removeProductRow(row.id)}>
                     <Text style={styles.removeBtn}>✕</Text>
                   </TouchableOpacity>
                 </View>
               ))}
               <View style={styles.tableFooter}>
-                <Text style={styles.footerLabel}>Total:</Text>
-                <Text style={styles.footerValue}>{productRows.reduce((sum, r) => sum + (Number(r.strength) || 0), 0)}</Text>
+                <View style={styles.footerLeadingSpacer} />
+                <Text style={styles.footerLabel}>Grand Total:</Text>
+                <Text style={styles.footerValue}>
+                  {productRows.reduce((sum, r) => sum + (Number(r.strength) || 0), 0)}
+                </Text>
+                <View style={styles.footerTrailingSpacer} />
               </View>
             </View>
           </ScrollView>
@@ -656,7 +711,9 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
               {submitting ? (
                 <ActivityIndicator color={colors.textLight} size="small" />
               ) : (
-                <Text style={styles.warehouseButtonText}>Submit to Warehouse</Text>
+                <Text style={styles.warehouseButtonText} numberOfLines={2}>
+                  Submit to Warehouse
+                </Text>
               )}
             </TouchableOpacity>
           )}
@@ -709,7 +766,6 @@ const styles = StyleSheet.create({
   dcMetaText: { ...typography.body.small, color: colors.textSecondary },
   section: { marginBottom: 24 },
   sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
-  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   fieldContainer: { marginBottom: 14 },
   label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 },
   input: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12, color: colors.textPrimary },
@@ -725,46 +781,126 @@ const styles = StyleSheet.create({
   datePickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
   datePickerTitle: { ...typography.heading.h3, color: colors.textPrimary },
   doneText: { ...typography.label.medium, color: colors.primary, fontWeight: '600' },
-  addProductButton: { backgroundColor: colors.primary, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  addProductButtonText: { ...typography.label.small, color: colors.textLight, fontWeight: '600' },
   tableScroll: { marginHorizontal: -20 },
-  tableWrap: { minWidth: 800, paddingRight: 20 },
-  tableHeader: { flexDirection: 'row', backgroundColor: colors.background, padding: 10, borderBottomWidth: 2, borderBottomColor: colors.border, alignItems: 'center' },
-  th: { ...typography.label.small, color: colors.textPrimary, fontWeight: '600' },
-  tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border, padding: 8, alignItems: 'center', minHeight: 44 },
+  tableWrap: { minWidth: 980, paddingRight: 20 },
+  tableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#F8FAFC',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: '#CBD5E1',
+    alignItems: 'center',
+  },
+  th: {
+    ...typography.label.small,
+    color: '#1E3A5F',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    minHeight: 48,
+    backgroundColor: '#fff',
+  },
   td: { ...typography.body.small, color: colors.textPrimary, justifyContent: 'center', paddingHorizontal: 4 },
-  tableInput: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 6, padding: 6, fontSize: 12, minHeight: 32, color: colors.textPrimary },
-  tablePicker: { height: 36, minWidth: 70, color: '#111827', backgroundColor: colors.backgroundLight, fontSize: 14 },
-  tdPickerWrap: { backgroundColor: colors.backgroundLight },
-  colProduct: { width: 100 },
-  colClass: { width: 48 },
-  colCategory: { width: 95 },
-  colSpecs: { width: 68 },
-  colSubject: { width: 68 },
-  colStrength: { width: 64 },
-  colLevel: { width: 56 },
+  tdText: {
+    ...typography.body.small,
+    color: '#0F172A',
+    paddingHorizontal: 4,
+  },
+  tableInput: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    fontSize: 13,
+    minHeight: 36,
+    color: colors.textPrimary,
+    textAlign: 'center',
+  },
+  colProduct: { width: 90 },
+  colClass: { width: 56 },
+  colCategory: { width: 110 },
+  colProductCategory: { width: 120 },
+  colSpecs: { width: 90 },
+  colSubject: { width: 80 },
+  colQty: { width: 72 },
+  colLevel: { width: 80 },
   colTerm: { width: 72 },
-  colAction: { width: 48 },
-  termReadOnly: { ...typography.body.small, color: colors.textPrimary },
-  removeBtn: { fontSize: 18, color: colors.error, fontWeight: 'bold' },
-  tableFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', padding: 12, backgroundColor: colors.background, borderTopWidth: 2, borderTopColor: colors.border, gap: 8 },
-  footerLabel: { ...typography.body.medium, fontWeight: '600', color: colors.textPrimary },
-  footerValue: { ...typography.body.medium, fontWeight: '600', color: colors.primary },
-  buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16, marginBottom: 24 },
+  colAction: { width: 48, alignItems: 'center' },
+  removeBtn: { fontSize: 18, color: '#DC2626', fontWeight: 'bold' },
+  tableFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    backgroundColor: '#E2E8F0',
+    borderTopWidth: 2,
+    borderTopColor: '#94A3B8',
+  },
+  footerLeadingSpacer: { width: 546 },
+  footerLabel: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 110, textAlign: 'right', paddingRight: 8 },
+  footerValue: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 72, textAlign: 'center' },
+  footerTrailingSpacer: { flex: 1 },
+  buttonRow: { flexDirection: 'column', gap: 12, marginTop: 16, marginBottom: 24 },
   cancelButton: {
-    flex: 1,
-    minWidth: 100,
+    width: '100%',
     paddingVertical: 14,
     borderRadius: 12,
     backgroundColor: colors.backgroundLight,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  cancelButtonText: { ...typography.label.medium, color: colors.textPrimary, fontWeight: '600' },
-  saveButton: { flex: 1, minWidth: 100, paddingVertical: 14, borderRadius: 12, backgroundColor: colors.primary, alignItems: 'center' },
-  saveButtonText: { ...typography.label.medium, color: colors.textLight, fontWeight: '600' },
-  warehouseButton: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: colors.error, alignItems: 'center' },
-  warehouseButtonText: { ...typography.label.medium, color: colors.textLight, fontWeight: '600' },
+  cancelButtonText: {
+    ...typography.label.medium,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  saveButton: {
+    width: '100%',
+    minHeight: 48,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveButtonText: {
+    color: colors.textLight,
+    fontWeight: '600',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  warehouseButton: {
+    width: '100%',
+    minHeight: 48,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: colors.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  warehouseButtonText: {
+    color: colors.textLight,
+    fontWeight: '600',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
   buttonDisabled: { opacity: 0.6 },
 });

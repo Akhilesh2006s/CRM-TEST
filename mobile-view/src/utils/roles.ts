@@ -28,12 +28,16 @@ export function getRoleFlags(user: CrmUser | null | undefined) {
       roleLower === 'super admin' ||
       role === 'Admin' ||
       role === 'Super Admin',
+    isSuperAdmin: roleLower === 'super admin' || role === 'Super Admin',
     isPartner: role === 'Partner' || role === 'Vendor' || roleLower === 'partner' || roleLower === 'vendor',
     isManager: role === 'Manager' || roleLower === 'manager',
     isCoordinator: role === 'Coordinator' || roleLower === 'coordinator',
     isSeniorCoordinator:
       role === 'Senior Coordinator' || roleLower === 'senior coordinator',
-    isExecutiveManager: role === 'Executive Manager',
+    isExecutiveManager:
+      role === 'Executive Manager' ||
+      roleLower === 'executive manager' ||
+      roleIncludes(user, 'executive manager'),
     isTrainer: role === 'Trainer',
     isWarehouseExecutive: role === 'Warehouse Executive',
     isWarehouseManager: role === 'Warehouse Manager',

@@ -24,6 +24,8 @@ type ExpensePolicy = {
   skipFinanceStage: boolean;
   foodBillMandatoryAbove: number;
   requireTicketForModes: string[];
+  bikeRatePerKm?: number;
+  carRatePerKm?: number;
 };
 
 type CartLine = {
@@ -91,9 +93,30 @@ function emptyLine(category: CartLine['category'] = 'travel'): CartLine {
   };
 }
 
-function calcTravelAmount(mode: string, kms: number): string {
-  if (mode === 'Bike') return (kms * 2.8).toFixed(2);
-  if (mode === 'Car') return (kms * 8).toFixed(2);
+function resolveRates(policy?: ExpensePolicy | null) {
+  const bike = Number(policy?.bikeRatePerKm);
+  const car = Number(policy?.carRatePerKm);
+  return {
+    bikeRatePerKm: bike > 0 ? bike : 2.8,
+    carRatePerKm: car > 0 ? car : 8,
+  };
+}
+
+function isPerKmMode(mode: string) {
+  return mode === 'Bike' || mode === 'Car';
+}
+
+function calcTravelAmount(mode: string, kms: number, policy?: ExpensePolicy | null): string {
+  if (!isPerKmMode(mode) || kms <= 0) return '';
+  const r = resolveRates(policy);
+  const rate = mode === 'Bike' ? r.bikeRatePerKm : r.carRatePerKm;
+  return (kms * rate).toFixed(2);
+}
+
+function perKmLabel(mode: string, policy?: ExpensePolicy | null): string {
+  const r = resolveRates(policy);
+  if (mode === 'Bike') return `₹${r.bikeRatePerKm}/km`;
+  if (mode === 'Car') return `₹${r.carRatePerKm}/km`;
   return '';
 }
 
@@ -193,6 +216,8 @@ export default function ExpenseCreateScreen({ navigation }: any) {
           skipFinanceStage: false,
           foodBillMandatoryAbove: 500,
           requireTicketForModes: ['Bus', 'Train', 'Flight'],
+          bikeRatePerKm: 2.8,
+          carRatePerKm: 8,
         })
       );
   }, []);
@@ -255,7 +280,18 @@ export default function ExpenseCreateScreen({ navigation }: any) {
         { from: draft.travelFrom, to: draft.travelTo }
       );
       if (res.gpsDistance != null) {
-        setDraft((d) => ({ ...d, gpsDistance: res.gpsDistance }));
+        const kms = String(res.gpsDistance);
+        setDraft((d) => {
+          const amt = isPerKmMode(d.transportType)
+            ? calcTravelAmount(d.transportType, res.gpsDistance!, policy)
+            : d.amount;
+          return {
+            ...d,
+            gpsDistance: res.gpsDistance,
+            approxKms: kms,
+            amount: amt || d.amount,
+          };
+        });
         setGpsNote(`System estimate: ${res.gpsDistance} km`);
       } else {
         setGpsNote(res.error || 'GPS distance unavailable — manager can verify manually.');
@@ -267,26 +303,27 @@ export default function ExpenseCreateScreen({ navigation }: any) {
     }
   };
 
-  const travelAmountFor = (mode: string, kms: string) => {
-    if (mode !== 'Bike' && mode !== 'Car') return null;
-    return calcTravelAmount(mode, parseFloat(kms) || 0);
-  };
+  const travelAmountLocked =
+    draft.category === 'travel' && isPerKmMode(draft.transportType);
 
   const updateKms = (kms: string) => {
-    const calculated = travelAmountFor(draft.transportType, kms);
+    const amt = isPerKmMode(draft.transportType)
+      ? calcTravelAmount(draft.transportType, parseFloat(kms) || 0, policy)
+      : draft.amount;
     setDraft({
       ...draft,
       approxKms: kms,
-      amount: calculated ?? draft.amount,
+      amount: isPerKmMode(draft.transportType) ? amt : draft.amount,
     });
   };
 
   const updateTransport = (mode: string) => {
-    const calculated = travelAmountFor(mode, draft.approxKms);
+    const kms = parseFloat(draft.approxKms) || 0;
+    const amt = isPerKmMode(mode) ? calcTravelAmount(mode, kms, policy) : '';
     setDraft({
       ...draft,
       transportType: mode,
-      amount: calculated ?? draft.amount,
+      amount: isPerKmMode(mode) ? amt : draft.amount,
     });
   };
 
@@ -410,8 +447,9 @@ export default function ExpenseCreateScreen({ navigation }: any) {
   return (
     <ScreenShell
       noScroll
-      title="Create Expense"
-      subtitle="Add to list (batch) or submit this line now"
+      title="Submit reimbursement"
+      subtitle="Add one or more expense lines, then submit for manager approval."
+      contentContainerStyle={{ flex: 1, minHeight: 0 }}
     >
       <View style={styles.page}>
       <ScrollView
@@ -419,6 +457,7 @@ export default function ExpenseCreateScreen({ navigation }: any) {
         style={styles.content}
         contentContainerStyle={styles.contentContainer}
         keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled
       >
         {successMessage && (
           <MessageBanner
@@ -435,8 +474,8 @@ export default function ExpenseCreateScreen({ navigation }: any) {
         <View style={styles.infoBox}>
           <Text style={styles.infoText}>
             Proof rules: accommodation always needs a bill; food above ₹
-            {policy?.foodBillMandatoryAbove ?? 500} needs a bill; Bus/Train/Flight/Other travel needs a
-            ticket. Use GPS verify on travel to compare claimed distance.
+            {policy?.foodBillMandatoryAbove ?? 500} needs a bill; Bus/Train/Flight travel needs a ticket
+            upload. Use GPS verify on travel to compare claimed distance with maps.
           </Text>
         </View>
 
@@ -449,48 +488,61 @@ export default function ExpenseCreateScreen({ navigation }: any) {
 
         <DateField label="Date *" value={draft.date} onPress={() => setShowDatePicker(true)} />
 
+        <View style={styles.fieldContainer}>
+          <Text style={styles.label}>Amount (₹) *</Text>
+          <WebInput
+            style={styles.input}
+            value={draft.amount}
+            onChangeText={(text) => {
+              if (travelAmountLocked) return;
+              setDraft((d) => ({ ...d, amount: text }));
+            }}
+            placeholder="0.00"
+            keyboardType="decimal-pad"
+            editable={!travelAmountLocked}
+          />
+          {travelAmountLocked && (
+            <Text style={styles.hint}>
+              Auto-calculated from distance ({perKmLabel(draft.transportType, policy)}) — not editable
+            </Text>
+          )}
+        </View>
+
         {draft.category === 'travel' && (
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>Travel</Text>
-        <View style={styles.fieldContainer}>
-              <Text style={styles.label}>Travel mode *</Text>
-              <View style={styles.modeRow}>
-                {TRANSPORT_OPTIONS.map((opt) => {
-                  const selected = draft.transportType === opt.value;
-                  return (
-          <TouchableOpacity 
-                      key={opt.value}
-                      style={[styles.modeChip, selected && styles.modeChipSelected]}
-                      onPress={() => updateTransport(opt.value)}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={[styles.modeChipText, selected && styles.modeChipTextSelected]}>
-                        {opt.label}
-            </Text>
-          </TouchableOpacity>
-                  );
-                })}
-              </View>
-        </View>
-            <FormField 
-              label="From *" 
+            <WebSelect
+              label="Travel mode *"
+              value={draft.transportType}
+              onValueChange={updateTransport}
+              items={TRANSPORT_OPTIONS}
+              placeholder="Select mode"
+            />
+            <FormField
+              label="From *"
               value={draft.travelFrom}
               onChangeText={(t) => setDraft((d) => ({ ...d, travelFrom: t }))}
               placeholder="Hyderabad"
             />
-            <FormField 
-              label="To *" 
+            <FormField
+              label="To *"
               value={draft.travelTo}
               onChangeText={(t) => setDraft((d) => ({ ...d, travelTo: t }))}
               placeholder="Vijayawada"
             />
-            <FormField 
+            <FormField
               label="Total distance claimed (km) *"
               value={draft.approxKms}
               onChangeText={updateKms}
               placeholder="0"
-              keyboardType="decimal-pad" 
+              keyboardType="decimal-pad"
             />
+            {isPerKmMode(draft.transportType) && (
+              <Text style={styles.hint}>
+                Rate: {perKmLabel(draft.transportType, policy)} — amount updates automatically and is
+                locked
+              </Text>
+            )}
             <TouchableOpacity
               style={styles.gpsButton}
               onPress={fetchGpsDistance}
@@ -503,12 +555,6 @@ export default function ExpenseCreateScreen({ navigation }: any) {
               )}
             </TouchableOpacity>
             {gpsNote ? <Text style={styles.hint}>{gpsNote}</Text> : null}
-            {(draft.transportType === 'Bike' || draft.transportType === 'Car') && (
-              <Text style={styles.calcPreview}>
-                Calculated amount: ₹{draft.amount || '0.00'} (
-                {draft.transportType === 'Bike' ? '₹2.8/km' : '₹8/km'})
-              </Text>
-            )}
             {ticketRequired && (
               <UploadField
                 label="Ticket / proof upload *"
@@ -574,29 +620,6 @@ export default function ExpenseCreateScreen({ navigation }: any) {
         )}
 
         <View style={styles.fieldContainer}>
-          <Text style={styles.label}>Amount (₹) *</Text>
-          <WebInput
-            style={styles.input}
-            value={draft.amount}
-            onChangeText={(text) => setDraft((d) => ({ ...d, amount: text }))}
-            placeholder="0.00"
-            keyboardType="decimal-pad"
-            editable={
-              !(
-                draft.category === 'travel' &&
-                (draft.transportType === 'Bike' || draft.transportType === 'Car')
-              )
-            }
-          />
-          {draft.category === 'travel' &&
-            (draft.transportType === 'Bike' || draft.transportType === 'Car') && (
-              <Text style={styles.hint}>
-                Rate: {draft.transportType === 'Bike' ? '₹2.8/km' : '₹8/km'} — updates when distance changes
-              </Text>
-            )}
-        </View>
-
-        <View style={styles.fieldContainer}>
           <Text style={styles.label}>Remarks</Text>
           <WebInput
             style={[styles.input, styles.textArea]}
@@ -647,12 +670,6 @@ export default function ExpenseCreateScreen({ navigation }: any) {
           variant="outline"
           disabled={submitting}
         />
-        <WebButton
-          title={submitting ? 'Submitting…' : 'Submit this expense'}
-          onPress={submitNow}
-          loading={submitting}
-          disabled={submitting}
-        />
         {cart.length > 0 && (
           <WebButton
             title={submitting ? 'Submitting…' : `Submit all (${cart.length}) for approval`}
@@ -661,6 +678,12 @@ export default function ExpenseCreateScreen({ navigation }: any) {
             disabled={submitting}
           />
         )}
+        <WebButton
+          title={submitting ? 'Submitting…' : 'Submit this expense'}
+          onPress={submitNow}
+          loading={submitting}
+          disabled={submitting}
+        />
         <WebButton title="Cancel" onPress={() => navigation.goBack()} variant="outline" disabled={submitting} />
       </View>
       </View>
@@ -779,10 +802,11 @@ function UploadField({ label, uri, onPick }: { label: string; uri: string | null
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1 },
-  content: { flex: 1 },
-  contentContainer: { padding: 20, paddingBottom: 24 },
+  page: { flex: 1, minHeight: 0 },
+  content: { flex: 1, minHeight: 0 },
+  contentContainer: { padding: 20, paddingBottom: 24, flexGrow: 1 },
   footer: {
+    flexShrink: 0,
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 28,

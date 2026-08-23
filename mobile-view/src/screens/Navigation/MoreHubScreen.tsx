@@ -1,10 +1,11 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { navigateRoot } from '../../navigation/navigationRef';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { getRoleFlags } from '../../utils/roles';
+import { confirmLogout } from '../../utils/confirmLogout';
 
 export default function MoreHubScreen() {
   const { user, logout } = useAuth();
@@ -23,10 +24,7 @@ export default function MoreHubScreen() {
   ];
 
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: () => logout() },
-    ]);
+    confirmLogout(logout);
   };
 
   return (

@@ -19,7 +19,7 @@ import MessageBanner from '../../components/MessageBanner';
 
 const SCHOOL_TYPE_OPTIONS = [
   { label: 'New', value: 'New' },
-  { label: 'Employee', value: 'Employee' },
+  { label: 'Existing', value: 'Existing' },
 ];
 const PRIORITY_OPTIONS = [
   { label: 'Hot', value: 'Hot' },
@@ -29,7 +29,35 @@ const PRIORITY_OPTIONS = [
   { label: 'Not Interested', value: 'Not Interested' },
 ];
 
-type ProductSelection = { name: string; checked: boolean };
+const PRODUCT_STATUS_OPTIONS = [
+  { label: 'Hot', value: 'Hot' },
+  { label: 'Warm', value: 'Warm' },
+  { label: 'Not Interested', value: 'Not Interested' },
+  { label: 'Management Not Met', value: 'Management Not Met' },
+  { label: 'Visit Again', value: 'Visit Again' },
+];
+
+type ProductStatus =
+  | 'Hot'
+  | 'Warm'
+  | 'Not Interested'
+  | 'Management Not Met'
+  | 'Visit Again';
+
+type ProductSelection = {
+  name: string;
+  checked: boolean;
+  status: ProductStatus;
+  strength: number;
+  chance: number;
+};
+
+type LeadProductDetail = {
+  name: string;
+  status: ProductStatus;
+  strength: number;
+  chance: number;
+};
 
 function parseFollowUpDate(s: string): string | undefined {
   if (!s?.trim()) return undefined;
@@ -40,22 +68,110 @@ function parseFollowUpDate(s: string): string | undefined {
   return undefined;
 }
 
-function extractProductNames(products: any): string[] {
+function normalizeProductStatus(raw: any): ProductStatus {
+  const s = String(raw || '').trim();
+  const allowed: ProductStatus[] = [
+    'Hot',
+    'Warm',
+    'Not Interested',
+    'Management Not Met',
+    'Visit Again',
+  ];
+  return (allowed.includes(s as ProductStatus) ? s : 'Warm') as ProductStatus;
+}
+
+function extractLeadProducts(products: any): LeadProductDetail[] {
   if (!products) return [];
+  let list: any[] = [];
   if (Array.isArray(products)) {
-    return products
-      .map((p: any) => (typeof p === 'string' ? p : p.product_name || p.product || ''))
-      .filter(Boolean);
-  }
-  if (typeof products === 'string' && products.trim()) {
+    list = products;
+  } else if (typeof products === 'string' && products.trim()) {
     try {
       const parsed = JSON.parse(products);
-      if (Array.isArray(parsed)) return extractProductNames(parsed);
+      if (Array.isArray(parsed)) list = parsed;
+      else {
+        return products
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .map((name) => ({ name, status: 'Warm' as ProductStatus, strength: 0, chance: 0 }));
+      }
     } catch {
-      return products.split(',').map((x) => x.trim()).filter(Boolean);
+      return products
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .map((name) => ({ name, status: 'Warm' as ProductStatus, strength: 0, chance: 0 }));
     }
   }
-  return [];
+  return list
+    .map((p: any) => {
+      if (typeof p === 'string') {
+        return { name: p.trim(), status: 'Warm' as ProductStatus, strength: 0, chance: 0 };
+      }
+      const name = String(p.product_name || p.product || p.name || '').trim();
+      if (!name) return null;
+      return {
+        name,
+        status: normalizeProductStatus(p.status || p.lead_status),
+        strength: Number(p.strength) || 0,
+        chance: Number(p.chance) || 0,
+      };
+    })
+    .filter(Boolean) as LeadProductDetail[];
+}
+
+/** Prefer current products[]; fill missing strength/chance/status from updateHistory snapshots (incl. create). */
+function mergeLeadProductDetails(lead: any): LeadProductDetail[] {
+  const fromProducts = extractLeadProducts(lead?.products);
+  const history = Array.isArray(lead?.updateHistory) ? [...lead.updateHistory] : [];
+  history.sort(
+    (a, b) => new Date(a?.updatedAt || 0).getTime() - new Date(b?.updatedAt || 0).getTime(),
+  );
+
+  const fromHistory = new Map<string, LeadProductDetail>();
+  for (const entry of history) {
+    for (const row of extractLeadProducts(entry?.productsInterested)) {
+      const key = row.name.toLowerCase();
+      const prev = fromHistory.get(key);
+      // Later follow-ups override earlier; keep non-zero metrics when a later row clears them
+      fromHistory.set(key, {
+        name: row.name,
+        status: row.status || prev?.status || 'Warm',
+        strength: row.strength > 0 ? row.strength : prev?.strength || 0,
+        chance: row.chance > 0 ? row.chance : prev?.chance || 0,
+      });
+    }
+  }
+
+  const merged = new Map<string, LeadProductDetail>();
+
+  for (const [key, hist] of fromHistory) {
+    merged.set(key, { ...hist });
+  }
+
+  for (const p of fromProducts) {
+    const key = p.name.toLowerCase();
+    const hist = merged.get(key);
+    merged.set(key, {
+      name: p.name,
+      status: p.status || hist?.status || 'Warm',
+      strength: p.strength > 0 ? p.strength : hist?.strength || 0,
+      chance: p.chance > 0 ? p.chance : hist?.chance || 0,
+    });
+  }
+
+  return Array.from(merged.values());
+}
+
+function emptyProduct(name: string, checked = false): ProductSelection {
+  return {
+    name,
+    checked,
+    status: 'Warm',
+    strength: 0,
+    chance: 0,
+  };
 }
 
 export default function LeadEditScreen({ navigation, route }: any) {
@@ -85,7 +201,7 @@ export default function LeadEditScreen({ navigation, route }: any) {
   });
   const [products, setProducts] = useState<ProductSelection[]>([]);
   const [catalogNames, setCatalogNames] = useState<string[]>([]);
-  const [leadProductNames, setLeadProductNames] = useState<string[]>([]);
+  const [leadProducts, setLeadProducts] = useState<LeadProductDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -108,12 +224,24 @@ export default function LeadEditScreen({ navigation, route }: any) {
       } catch {
         data = await apiService.get('/products');
       }
-      const list = Array.isArray(data) ? data : data?.data || [];
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
       const names = list
-        .map((p: any) => (typeof p === 'string' ? p : p.name || p.product_name || ''))
+        .filter((p: any) => p.prodStatus !== 0 && p.prodStatus !== false)
+        .map((p: any) =>
+          typeof p === 'string'
+            ? p
+            : p.productName || p.name || p.product_name || '',
+        )
+        .map((n: string) => String(n).trim())
         .filter(Boolean);
-      setCatalogNames(names);
-    } catch {
+      // Unique preserve order
+      setCatalogNames(Array.from(new Set(names)));
+    } catch (err) {
+      console.error('Failed to load products:', err);
       setCatalogNames([]);
     } finally {
       setLoadingProducts(false);
@@ -121,14 +249,52 @@ export default function LeadEditScreen({ navigation, route }: any) {
   };
 
   useEffect(() => {
-    if (catalogNames.length === 0) return;
-    setProducts(
-      catalogNames.map((name) => ({
-        name,
-        checked: leadProductNames.includes(name),
-      }))
+    const byName = new Map(
+      leadProducts.map((p) => [p.name.trim().toLowerCase(), p] as const),
     );
-  }, [catalogNames, leadProductNames]);
+    const catalogSet = new Set(catalogNames.map((n) => n.trim().toLowerCase()));
+
+    const merged: ProductSelection[] = catalogNames.map((name) => {
+      const existing = byName.get(name.trim().toLowerCase());
+      if (existing) {
+        return {
+          name,
+          checked: true,
+          status: existing.status,
+          strength: existing.strength,
+          chance: existing.chance,
+        };
+      }
+      return emptyProduct(name, false);
+    });
+
+    for (const existing of leadProducts) {
+      const key = existing.name.trim().toLowerCase();
+      if (!key || catalogSet.has(key)) continue;
+      merged.push({
+        name: existing.name.trim(),
+        checked: true,
+        status: existing.status,
+        strength: existing.strength,
+        chance: existing.chance,
+      });
+    }
+
+    if (merged.length === 0 && leadProducts.length > 0) {
+      setProducts(
+        leadProducts.map((p) => ({
+          name: p.name,
+          checked: true,
+          status: p.status,
+          strength: p.strength,
+          chance: p.chance,
+        })),
+      );
+      return;
+    }
+
+    setProducts(merged);
+  }, [catalogNames, leadProducts]);
 
   const loadLead = async () => {
     try {
@@ -174,7 +340,7 @@ export default function LeadEditScreen({ navigation, route }: any) {
         follow_up_date: followStr,
       });
 
-      setLeadProductNames(extractProductNames(lead.products));
+      setLeadProducts(mergeLeadProductDetails(lead));
     } catch (error: any) {
       setErrorMessage(error.message || 'Failed to load lead');
     } finally {
@@ -182,10 +348,21 @@ export default function LeadEditScreen({ navigation, route }: any) {
     }
   };
 
+  const updateProduct = (index: number, patch: Partial<ProductSelection>) => {
+    setProducts((prev) => prev.map((p, i) => (i === index ? { ...p, ...patch } : p)));
+  };
+
   const handleProductCheck = (index: number, checked: boolean) => {
-    setProducts((prev) =>
-      prev.map((p, i) => (i === index ? { ...p, checked } : p))
-    );
+    updateProduct(index, { checked });
+  };
+
+  const handleProductStatusChange = (index: number, status: ProductStatus) => {
+    const patch: Partial<ProductSelection> = { status };
+    if (status !== 'Hot' && status !== 'Warm') {
+      patch.strength = 0;
+      patch.chance = 0;
+    }
+    updateProduct(index, patch);
   };
 
   const handleSubmit = async () => {
@@ -207,18 +384,36 @@ export default function LeadEditScreen({ navigation, route }: any) {
       return;
     }
 
-    const selectedProducts = products
-      .filter((p) => p.checked)
-      .map((p) => ({
-        product_name: p.name,
-        quantity: 1,
-        unit_price: 0,
-      }));
+    const selectedProducts = products.filter((p) => p.checked);
 
     if (selectedProducts.length === 0) {
       setErrorMessage('Please select at least one product.');
       return;
     }
+
+    for (const p of selectedProducts) {
+      if ((p.status === 'Hot' || p.status === 'Warm') && (!p.strength || p.strength <= 0)) {
+        setErrorMessage(`Enter strength for "${p.name}" when status is ${p.status}.`);
+        return;
+      }
+      if (p.status === 'Hot' && p.chance < 80) {
+        setErrorMessage(`Chance % for "${p.name}" must be at least 80% when status is Hot.`);
+        return;
+      }
+      if (p.status === 'Warm' && p.chance < 20) {
+        setErrorMessage(`Chance % for "${p.name}" must be at least 20% when status is Warm.`);
+        return;
+      }
+    }
+
+    const productsPayload = selectedProducts.map((p) => ({
+      product_name: p.name,
+      quantity: 1,
+      unit_price: 0,
+      status: p.status,
+      strength: p.strength || 0,
+      chance: p.status === 'Hot' || p.status === 'Warm' ? p.chance || 0 : 0,
+    }));
 
     setSubmitting(true);
     try {
@@ -243,7 +438,7 @@ export default function LeadEditScreen({ navigation, route }: any) {
         strength: form.strength ? Number(form.strength) : undefined,
         remarks: form.remarks,
         average_fee: form.average_fee ? Number(form.average_fee) : undefined,
-        products: selectedProducts,
+        products: productsPayload,
         follow_up_date: parseFollowUpDate(form.follow_up_date),
       };
 
@@ -375,24 +570,70 @@ export default function LeadEditScreen({ navigation, route }: any) {
           {loadingProducts ? (
             <ActivityIndicator color={colors.primary} style={{ marginVertical: 12 }} />
           ) : products.length === 0 ? (
-            <Text style={styles.hint}>No products available.</Text>
-          ) : (
-            products.map((product, index) => (
-              <TouchableOpacity
-                key={product.name}
-                style={styles.productRow}
-                onPress={() => handleProductCheck(index, !product.checked)}
-              >
-                <View
-                  style={[styles.checkbox, product.checked && styles.checkboxSelected]}
-                >
-                  {product.checked ? <Text style={styles.checkboxMark}>✓</Text> : null}
-                </View>
-                <Text style={styles.productName}>{product.name}</Text>
+            <View>
+              <Text style={styles.hint}>No products available from catalog.</Text>
+              <TouchableOpacity style={styles.retryBtn} onPress={loadProducts}>
+                <Text style={styles.retryBtnText}>Retry loading products</Text>
               </TouchableOpacity>
-            ))
+            </View>
+          ) : (
+            products.map((product, index) => {
+              const hotOrWarm = product.status === 'Hot' || product.status === 'Warm';
+              return (
+                <View key={`${product.name}-${index}`} style={styles.productCard}>
+                  <TouchableOpacity
+                    style={styles.productHeader}
+                    onPress={() => handleProductCheck(index, !product.checked)}
+                  >
+                    <View
+                      style={[styles.checkbox, product.checked && styles.checkboxSelected]}
+                    >
+                      {product.checked ? <Text style={styles.checkboxMark}>✓</Text> : null}
+                    </View>
+                    <Text style={styles.productName}>{product.name}</Text>
+                  </TouchableOpacity>
+                  {product.checked ? (
+                    <View style={styles.productFields}>
+                      <WebSelect
+                        label="Status"
+                        value={product.status}
+                        onValueChange={(v) =>
+                          handleProductStatusChange(index, v as ProductStatus)
+                        }
+                        items={PRODUCT_STATUS_OPTIONS}
+                      />
+                      <FormField
+                        label="Strength"
+                        value={hotOrWarm ? String(product.strength ?? '') : '0'}
+                        onChangeText={(text) =>
+                          updateProduct(index, { strength: Number(text) || 0 })
+                        }
+                        placeholder="Qty"
+                        keyboardType="number-pad"
+                        editable={hotOrWarm}
+                      />
+                      <FormField
+                        label="Chance %"
+                        value={hotOrWarm ? String(product.chance ?? '') : '0'}
+                        onChangeText={(text) =>
+                          updateProduct(index, {
+                            chance: Math.min(100, Math.max(0, Number(text) || 0)),
+                          })
+                        }
+                        placeholder="%"
+                        keyboardType="number-pad"
+                        editable={hotOrWarm}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
           )}
-          <Text style={styles.hint}>Select the products the school is interested in.</Text>
+          <Text style={styles.hint}>
+            Previously selected products are checked with their Status, Strength, and Chance %.
+            Select more products to add them.
+          </Text>
         </View>
 
         <FormField
@@ -497,20 +738,26 @@ function FormField({
   value,
   onChangeText,
   keyboardType,
+  placeholder,
+  editable = true,
 }: {
   label: string;
   value: string;
   onChangeText: (text: string) => void;
   keyboardType?: 'default' | 'phone-pad' | 'number-pad';
+  placeholder?: string;
+  editable?: boolean;
 }) {
   return (
     <View style={styles.fieldContainer}>
       <Text style={styles.label}>{label}</Text>
       <WebInput
-        style={styles.input}
+        style={[styles.input, !editable && styles.inputDisabled]}
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
+        placeholder={placeholder}
+        editable={editable}
       />
     </View>
   );
@@ -535,6 +782,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  inputDisabled: { backgroundColor: colors.background, opacity: 0.7 },
   textAreaContainer: { marginBottom: 16 },
   textArea: {
     minHeight: 80,
@@ -548,6 +796,26 @@ const styles = StyleSheet.create({
   section: { marginBottom: 16 },
   sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
   hint: { ...typography.body.small, color: colors.textSecondary, marginTop: 8 },
+  retryBtn: {
+    marginTop: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    alignSelf: 'flex-start',
+  },
+  retryBtnText: { ...typography.body.small, color: colors.primary, fontWeight: '600' },
+  productCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: colors.backgroundLight,
+  },
+  productHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  productFields: { gap: 4, marginTop: 4 },
   productRow: {
     flexDirection: 'row',
     alignItems: 'center',
