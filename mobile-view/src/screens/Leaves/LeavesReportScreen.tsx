@@ -1,29 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, Alert, ActivityIndicator } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, Alert } from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebSelect } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+
+type LeaveStatus = 'all' | 'Pending' | 'Approved' | 'Rejected';
 
 export default function LeavesReportScreen({ navigation }: any) {
   const [leaves, setLeaves] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'Approved' | 'Rejected' | 'Pending'>('all');
-
-  useEffect(() => {
-    loadData();
-  }, [filter]);
+  const [statusFilter, setStatusFilter] = useState<LeaveStatus>('all');
+  const [onLeaveDate, setOnLeaveDate] = useState('');
 
   const loadData = async () => {
     try {
       setLoading(true);
-      let endpoint = '/leaves';
-      if (filter !== 'all') {
-        endpoint += `?status=${filter}`;
-      }
-      const data = await apiService.get(endpoint);
+      const data = await apiService.get('/leaves');
       setLeaves(Array.isArray(data) ? data : (data?.data || []));
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load leaves report');
@@ -33,136 +28,87 @@ export default function LeavesReportScreen({ navigation }: any) {
     }
   };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadData();
-  };
+  useEffect(() => { loadData(); }, []);
 
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return '-';
-    try {
-      return new Date(dateString).toLocaleDateString('en-IN');
-    } catch {
-      return '-';
-    }
-  };
+  const counts = useMemo(() => {
+    const selectedDate = onLeaveDate ? new Date(`${onLeaveDate}T00:00:00`) : null;
+    return {
+      total: leaves.length,
+      pending: leaves.filter((leave) => leave.status === 'Pending').length,
+      approved: leaves.filter((leave) => leave.status === 'Approved').length,
+      rejected: leaves.filter((leave) => leave.status === 'Rejected').length,
+      onLeave: selectedDate ? leaves.filter((leave) => leave.status === 'Approved' && new Date(leave.startDate) <= selectedDate && new Date(leave.endDate) >= selectedDate).length : 0,
+    };
+  }, [leaves, onLeaveDate]);
 
-  const getStatusColor = (status?: string) => {
-    switch (status?.toLowerCase()) {
-      case 'approved':
-        return colors.success;
-      case 'rejected':
-        return colors.error || '#ef4444';
-      case 'pending':
-        return colors.warning;
-      default:
-        return colors.textSecondary;
-    }
+  const filteredLeaves = useMemo(() => {
+    const selectedDate = onLeaveDate ? new Date(`${onLeaveDate}T00:00:00`) : null;
+    return [...leaves]
+      .filter((leave) => statusFilter === 'all' || leave.status === statusFilter)
+      .filter((leave) => !selectedDate || statusFilter !== 'Approved' || (new Date(leave.startDate) <= selectedDate && new Date(leave.endDate) >= selectedDate))
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+  }, [leaves, onLeaveDate, statusFilter]);
+
+  const employeeName = (leave: any) => typeof leave.employeeId === 'string' ? leave.employeeId : leave.employeeId?.name || 'Unknown';
+  const managerName = (leave: any) => {
+    const manager = typeof leave.employeeId === 'object' ? leave.employeeId?.executiveManagerId : null;
+    return !manager ? '— Not assigned' : typeof manager === 'string' ? manager : manager.name || '—';
   };
+  const approvedByName = (leave: any) => !leave.approvedBy ? '—' : typeof leave.approvedBy === 'string' ? leave.approvedBy : leave.approvedBy.name || '—';
+  const formatDate = (date?: string) => date ? new Date(date).toLocaleDateString('en-IN') : '—';
+  const refresh = () => { setRefreshing(true); loadData(); };
 
   return (
-    <ScreenShell
-      title="Leaves Report"
-      loading={loading && !refreshing}
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-    >
-<View style={styles.filterContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {(['all', 'Approved', 'Rejected', 'Pending'] as const).map((filterType) => (
-            <TouchableOpacity key={filterType} style={[styles.filterTab, filter === filterType && styles.filterTabActive]} onPress={() => setFilter(filterType)}>
-              <Text style={[styles.filterTabText, filter === filterType && styles.filterTabTextActive]}>{filterType.charAt(0).toUpperCase() + filterType.slice(1)}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+    <ScreenShell title="Leaves Report" loading={loading && !refreshing} refreshing={refreshing} onRefresh={refresh}>
+      <View style={styles.headingRow}>
+        <Text style={styles.heading}>Leaves Report</Text>
+        <TouchableOpacity style={styles.pendingButton} onPress={() => navigation.navigate('LeavesPending')}>
+          <Text style={styles.pendingButtonText}>Pending approvals</Text>
+        </TouchableOpacity>
       </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {leaves.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📊</Text>
-            <Text style={styles.emptyText}>No leaves found</Text>
-          </View>
-        ) : (
-          leaves.map((leave) => (
-            <View key={leave._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.employeeName}>{typeof leave.employeeId === 'string' ? leave.employeeId : leave.employeeId?.name || 'Unknown'}</Text>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(leave.status) + '20' }]}>
-                  <Text style={[styles.statusBadgeText, { color: getStatusColor(leave.status) }]}>{leave.status || 'Pending'}</Text>
-                </View>
-              </View>
-              <View style={styles.cardBody}>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>From:</Text>
-                  <Text style={styles.infoValue}>{formatDate(leave.startDate)}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>To:</Text>
-                  <Text style={styles.infoValue}>{formatDate(leave.endDate)}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Days:</Text>
-                  <Text style={styles.infoValue}>{leave.days || '-'}</Text>
-                </View>
-                {leave.reason && (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoLabel}>Reason:</Text>
-                    <Text style={styles.infoValue}>{leave.reason}</Text>
-                  </View>
-                )}
-                {(leave.status === 'Approved' || leave.status === 'Rejected') && (
-                  <>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>Approved by:</Text>
-                      <Text style={styles.infoValue}>
-                        {typeof leave.approvedBy === 'object' && leave.approvedBy?.name
-                          ? leave.approvedBy.name
-                          : leave.approvedBy || '—'}
-                      </Text>
-                    </View>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>Approval date:</Text>
-                      <Text style={styles.infoValue}>{formatDate(leave.approvedAt)}</Text>
-                    </View>
-                  </>
-                )}
-              </View>
+      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.summaryScroll}>
+          <SummaryCard label="Total" value={counts.total} />
+          <SummaryCard label="Pending" value={counts.pending} />
+          <SummaryCard label="Approved" value={counts.approved} />
+          <SummaryCard label="Rejected" value={counts.rejected} />
+          <SummaryCard label="On leave (date)" value={counts.onLeave} />
+        </ScrollView>
+        <View style={styles.reportCard}>
+          <View style={styles.filters}>
+            <WebSelect label="Status" value={statusFilter} onValueChange={(value) => setStatusFilter(value as LeaveStatus)} items={[
+              { label: 'All statuses', value: 'all' }, { label: 'Pending', value: 'Pending' }, { label: 'Approved', value: 'Approved' }, { label: 'Rejected', value: 'Rejected' },
+            ]} />
+            <View style={styles.dateField}>
+              <Text style={styles.label}>On Leave Date</Text>
+              <WebInput style={styles.dateInput} value={onLeaveDate} onChangeText={setOnLeaveDate} placeholder="YYYY-MM-DD" keyboardType="numbers-and-punctuation" />
             </View>
-          ))
-        )}
+            <TouchableOpacity style={styles.refreshButton} onPress={loadData} disabled={loading}>
+              <Text style={styles.refreshButtonText}>{loading ? 'Refreshing…' : 'Refresh'}</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.tableScroll}>
+            <View style={styles.table}>
+              <View style={[styles.tableRow, styles.tableHeader]}>
+                <Text style={[styles.headerCell, styles.employeeColumn]}>Employee</Text><Text style={[styles.headerCell, styles.managerColumn]}>Manager</Text><Text style={[styles.headerCell, styles.statusColumn]}>Status</Text><Text style={[styles.headerCell, styles.typeColumn]}>Leave Type</Text><Text style={[styles.headerCell, styles.dateColumn]}>From</Text><Text style={[styles.headerCell, styles.dateColumn]}>To</Text><Text style={[styles.headerCell, styles.approvedByColumn]}>Approved by</Text><Text style={[styles.headerCell, styles.dateColumn]}>Approval date</Text><Text style={[styles.headerCell, styles.reasonColumn]}>Reason</Text>
+              </View>
+              {filteredLeaves.length === 0 ? <Text style={styles.emptyRow}>No leaves match filters</Text> : filteredLeaves.map((leave) => (
+                <View key={leave._id} style={styles.tableRow}>
+                  <Text style={[styles.cell, styles.employeeColumn]} numberOfLines={1}>{employeeName(leave)}</Text><Text style={[styles.cell, styles.managerColumn]} numberOfLines={1}>{managerName(leave)}</Text><Text style={[styles.cell, styles.statusColumn]}>{leave.status || 'Pending'}</Text><Text style={[styles.cell, styles.typeColumn]} numberOfLines={1}>{leave.leaveType || '—'}</Text><Text style={[styles.cell, styles.dateColumn]}>{formatDate(leave.startDate)}</Text><Text style={[styles.cell, styles.dateColumn]}>{formatDate(leave.endDate)}</Text><Text style={[styles.cell, styles.approvedByColumn]} numberOfLines={1}>{approvedByName(leave)}</Text><Text style={[styles.cell, styles.dateColumn]}>{formatDate(leave.approvedAt)}</Text><Text style={[styles.cell, styles.reasonColumn]} numberOfLines={1}>{leave.reason || '—'}</Text>
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
       </ScrollView>
     </ScreenShell>
   );
 }
 
+function SummaryCard({ label, value }: { label: string; value: number }) {
+  return <View style={styles.summaryCard}><Text style={styles.summaryLabel}>{label}</Text><Text style={styles.summaryValue}>{value}</Text></View>;
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  filterContainer: { backgroundColor: colors.backgroundLight, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  filterTab: { paddingHorizontal: 20, paddingVertical: 8, marginHorizontal: 6, borderRadius: 20, backgroundColor: colors.background },
-  filterTabActive: { backgroundColor: colors.primary },
-  filterTabText: { ...typography.label.medium, color: colors.textSecondary },
-  filterTabTextActive: { color: colors.textLight, fontWeight: '600' },
-  content: { flex: 1, padding: 16 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 16 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: colors.shadowDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  employeeName: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  statusBadgeText: { ...typography.label.small, fontWeight: '600' },
-  cardBody: { marginBottom: 12 },
-  infoRow: { flexDirection: 'row', marginBottom: 6 },
-  infoLabel: { ...typography.body.medium, color: colors.textSecondary, width: 80 },
-  infoValue: { ...typography.body.medium, color: colors.textPrimary, flex: 1 },
+  headingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }, heading: { ...typography.heading.h3, color: colors.textPrimary }, pendingButton: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: colors.backgroundLight, paddingHorizontal: 12, paddingVertical: 7 }, pendingButtonText: { fontSize: 12, fontWeight: '600', color: colors.textPrimary }, content: { flex: 1, padding: 16 }, summaryScroll: { gap: 10, paddingBottom: 16 }, summaryCard: { width: 145, minHeight: 82, justifyContent: 'space-between', borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundLight, padding: 14 }, summaryLabel: { fontSize: 12, color: colors.textSecondary }, summaryValue: { fontSize: 24, fontWeight: '700', color: colors.textPrimary }, reportCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.backgroundLight, overflow: 'hidden', marginBottom: 24 }, filters: { padding: 14, borderBottomWidth: 1, borderBottomColor: colors.border }, label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 }, dateField: { marginBottom: 12 }, dateInput: { marginBottom: 0, backgroundColor: colors.background }, refreshButton: { alignSelf: 'flex-end', minWidth: 96, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: colors.backgroundLight, alignItems: 'center' }, refreshButtonText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary }, tableScroll: { paddingBottom: 4 }, table: { minWidth: 1260 }, tableRow: { flexDirection: 'row', minHeight: 42, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: colors.borderLight }, tableHeader: { minHeight: 40, backgroundColor: '#F0F9FF' }, headerCell: { paddingHorizontal: 10, fontSize: 12, fontWeight: '600', color: colors.textPrimary, textAlign: 'center' }, cell: { paddingHorizontal: 10, fontSize: 12, color: colors.textPrimary, textAlign: 'center' }, employeeColumn: { width: 135, textAlign: 'left' }, managerColumn: { width: 170, textAlign: 'left' }, statusColumn: { width: 100 }, typeColumn: { width: 130, textAlign: 'left' }, dateColumn: { width: 110 }, approvedByColumn: { width: 150, textAlign: 'left' }, reasonColumn: { width: 145, textAlign: 'left' }, emptyRow: { minWidth: 1260, padding: 20, textAlign: 'center', color: colors.textSecondary },
 });
-
-

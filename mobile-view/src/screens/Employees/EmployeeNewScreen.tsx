@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
@@ -6,6 +6,8 @@ import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
 import EmployeeTaggingPicker, { supportsEmployeeTagging } from '../../components/EmployeeTaggingPicker';
+
+type Zone = { _id?: string; name: string };
 
 export default function EmployeeNewScreen({ navigation }: any) {
   const [form, setForm] = useState({
@@ -27,6 +29,8 @@ export default function EmployeeNewScreen({ navigation }: any) {
     taggedEmployeeIds: [] as string[],
   });
   const [submitting, setSubmitting] = useState(false);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [loadingPincode, setLoadingPincode] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -37,9 +41,38 @@ export default function EmployeeNewScreen({ navigation }: any) {
 
   const scrollRef = useRef<ScrollView>(null);
 
+  useEffect(() => {
+    apiService.get<Zone[]>('/zones')
+      .then((data) => setZones(Array.isArray(data) ? data : []))
+      .catch(() => setZones([]));
+  }, []);
+
   const clearMessages = () => {
     setSuccessMessage(null);
     setErrorMessage(null);
+  };
+
+  const handlePincodeChange = async (value: string) => {
+    const pincode = value.replace(/\D/g, '').slice(0, 6);
+    setForm((current) => ({ ...current, pincode }));
+    if (pincode.length !== 6) return;
+
+    setLoadingPincode(true);
+    try {
+      const location = await apiService.get<any>(`/location/resolve?pincode=${pincode}`);
+      setForm((current) => ({
+        ...current,
+        city: location.city || location.town || current.city,
+        district: location.district || current.district,
+        state: location.state || current.state,
+        zone: location.zone || current.zone,
+        cluster: location.cluster || current.cluster,
+      }));
+    } catch {
+      // Keep the fields editable when this pincode has no configured mapping.
+    } finally {
+      setLoadingPincode(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -64,18 +97,23 @@ export default function EmployeeNewScreen({ navigation }: any) {
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
-    if (!form.state?.trim()) {
-      setErrorMessage('State is required');
+    const locationFields: Array<[string, string]> = [
+      ['Pincode', form.pincode],
+      ['State', form.state],
+      ['Zone', form.zone],
+      ['Cluster', form.cluster],
+      ['District', form.district],
+      ['City', form.city],
+      ['User type', form.role],
+    ];
+    const missingLocationField = locationFields.find(([, value]) => !value?.trim());
+    if (missingLocationField) {
+      setErrorMessage(`${missingLocationField[0]} is required`);
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
-    if (!form.zone?.trim()) {
-      setErrorMessage('Zone is required');
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      return;
-    }
-    if (form.role === 'Executive' && !form.cluster?.trim()) {
-      setErrorMessage('Cluster is required for Executive role');
+    if (form.pincode.length !== 6) {
+      setErrorMessage('Pincode must contain 6 digits');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
@@ -86,9 +124,6 @@ export default function EmployeeNewScreen({ navigation }: any) {
         ...form,
         name: `${form.firstName} ${form.lastName}`.trim() || form.firstName || form.lastName || 'Executive',
       };
-      if (form.role !== 'Executive') {
-        delete payload.cluster;
-      }
       if (!supportsEmployeeTagging(form.role)) {
         delete payload.taggedEmployeeIds;
       }
@@ -144,12 +179,19 @@ export default function EmployeeNewScreen({ navigation }: any) {
           <WebInput style={styles.textArea} value={form.address1} onChangeText={(text: string) => setForm((f) => ({ ...f, address1: text }))} placeholder="Address 1" multiline numberOfLines={3} />
         </View>
         <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Location & User Type</Text>
+        <FormField label="Pincode *" value={form.pincode} onChangeText={handlePincodeChange} placeholder="6-digit pincode" keyboardType="number-pad" />
+        {loadingPincode ? <Text style={styles.lookupText}>Looking up location…</Text> : null}
         <FormField label="State *" value={form.state} onChangeText={(text: string) => setForm((f) => ({ ...f, state: text }))} placeholder="Enter Employee State" />
-        <FormField label="Zone *" value={form.zone} onChangeText={(text: string) => setForm((f) => ({ ...f, zone: text }))} placeholder="Enter Employee Zone" />
+        <WebSelect
+          label="Zone *"
+          value={form.zone}
+          onValueChange={(zone) => setForm((f) => ({ ...f, zone }))}
+          placeholder="Select employee zone"
+          items={zones.map((zone) => ({ label: zone.name, value: zone.name }))}
+        />
         <FormField label="Cluster *" value={form.cluster} onChangeText={(text: string) => setForm((f) => ({ ...f, cluster: text }))} placeholder="Enter Employee Cluster" />
-        <FormField label="District" value={form.district} onChangeText={(text: string) => setForm((f) => ({ ...f, district: text }))} placeholder="Enter Employee District" />
-        <FormField label="City" value={form.city} onChangeText={(text: string) => setForm((f) => ({ ...f, city: text }))} placeholder="City" />
-        <FormField label="PinCode" value={form.pincode} onChangeText={(text: string) => setForm((f) => ({ ...f, pincode: text }))} placeholder="Pincode" keyboardType="number-pad" />
+        <FormField label="District *" value={form.district} onChangeText={(text: string) => setForm((f) => ({ ...f, district: text }))} placeholder="Enter Employee District" />
+        <FormField label="City *" value={form.city} onChangeText={(text: string) => setForm((f) => ({ ...f, city: text }))} placeholder="City" />
         <View style={styles.fieldContainer}>
           <Text style={styles.label}>User Type *</Text>
           <View style={styles.roleContainer}>
@@ -242,10 +284,9 @@ const styles = StyleSheet.create({
   errorText: { ...typography.body.medium, color: '#991B1B', marginBottom: 12 },
   dismissError: { alignSelf: 'flex-start' },
   dismissErrorText: { color: '#EF4444', fontWeight: '600', fontSize: 14 },
-  submitButton: { marginTop: 24, borderRadius: 12, overflow: 'hidden' },
+  lookupText: { ...typography.body.small, color: colors.textSecondary, marginTop: -8, marginBottom: 12 },
+  submitButton: { marginTop: 24, borderRadius: 12, backgroundColor: colors.primary, paddingVertical: 16, alignItems: 'center' },
   submitButtonDisabled: { opacity: 0.6 },
   submitButtonGradient: { paddingVertical: 16, alignItems: 'center' },
   submitButtonText: { ...typography.label.large, color: colors.textLight, fontWeight: '600' },
 });
-
-
