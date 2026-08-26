@@ -18,6 +18,14 @@ import {
 } from '@/lib/clientDcProductRows'
 import { toast } from 'sonner'
 import { PlusCircle, X, Upload, Eye } from 'lucide-react'
+import { ReturnsListFilters } from '@/components/returns/ReturnsListFilters'
+import {
+  applyReturnsFilters,
+  EMPTY_RETURNS_FILTERS,
+  uniqueReturnFinYears,
+  uniqueReturnStatuses,
+  type ReturnsListFilterState,
+} from '@/lib/returnsListFilter'
 
 type StockReturn = {
   _id: string
@@ -226,6 +234,7 @@ function productsFromEmployeeDc(dc: {
 
 export default function ExecutiveStockReturnsPage() {
   const [returns, setReturns] = useState<StockReturn[]>([])
+  const [listFilters, setListFilters] = useState<ReturnsListFilterState>({ ...EMPTY_RETURNS_FILTERS })
   const [loading, setLoading] = useState(false)
   const [addReturnDialogOpen, setAddReturnDialogOpen] = useState(false)
   const [viewReturnDialogOpen, setViewReturnDialogOpen] = useState(false)
@@ -309,6 +318,13 @@ export default function ExecutiveStockReturnsPage() {
       setLoading(false)
     }
   }
+
+  const filteredReturns = useMemo(
+    () => applyReturnsFilters(returns, listFilters),
+    [returns, listFilters]
+  )
+  const filterStatuses = useMemo(() => uniqueReturnStatuses(returns), [returns])
+  const filterFinYears = useMemo(() => uniqueReturnFinYears(returns), [returns])
 
   const loadDcOrders = async () => {
     try {
@@ -792,6 +808,14 @@ export default function ExecutiveStockReturnsPage() {
         </Button>
       </div>
 
+      <ReturnsListFilters
+        filters={listFilters}
+        onChange={setListFilters}
+        statuses={filterStatuses}
+        finYears={filterFinYears}
+        showExecutive={false}
+      />
+
       <Card className="p-6">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -816,14 +840,14 @@ export default function ExecutiveStockReturnsPage() {
                     Loading...
                   </td>
                 </tr>
-              ) : returns.length === 0 ? (
+              ) : filteredReturns.length === 0 ? (
                 <tr>
                   <td className="py-8 text-center text-neutral-500" colSpan={10}>
                     No returns found
                   </td>
                 </tr>
               ) : (
-                returns.map((returnItem) => (
+                filteredReturns.map((returnItem) => (
                   <tr key={returnItem._id} className="border-b hover:bg-neutral-50">
                     <td className="py-3 px-4">{returnItem.returnId}</td>
                     <td className="py-3 px-4">{returnItem.lrNumber || '-'}</td>

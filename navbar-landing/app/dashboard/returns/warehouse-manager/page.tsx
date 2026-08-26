@@ -8,6 +8,15 @@ import { Card } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { Can } from '@/components/permissions/Can'
 import { NotebookPen, ArrowUpDown } from 'lucide-react'
+import { ReturnsListFilters } from '@/components/returns/ReturnsListFilters'
+import {
+  applyReturnsFilters,
+  EMPTY_RETURNS_FILTERS,
+  uniqueReturnExecutives,
+  uniqueReturnFinYears,
+  uniqueReturnStatuses,
+  type ReturnsListFilterState,
+} from '@/lib/returnsListFilter'
 
 type DcOrderRef = {
   _id?: string
@@ -80,6 +89,7 @@ function statusBadgeClass(status: string): string {
 export default function WarehouseManagerStockReturnsPage() {
   const router = useRouter()
   const [returns, setReturns] = useState<StockReturn[]>([])
+  const [listFilters, setListFilters] = useState<ReturnsListFilterState>({ ...EMPTY_RETURNS_FILTERS })
   const [loading, setLoading] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('returnDate')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -121,7 +131,7 @@ export default function WarehouseManagerStockReturnsPage() {
 
   const sortedReturns = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1
-    const list = [...returns]
+    const list = [...applyReturnsFilters(returns, listFilters)]
     list.sort((a, b) => {
       let av = ''
       let bv = ''
@@ -173,7 +183,7 @@ export default function WarehouseManagerStockReturnsPage() {
       return av.localeCompare(bv, undefined, { sensitivity: 'base' }) * dir
     })
     return list
-  }, [returns, sortKey, sortDir])
+  }, [returns, listFilters, sortKey, sortDir])
 
   const SortableHeader = ({ label, column }: { label: string; column: SortKey }) => (
     <th className="py-3 px-3 font-semibold text-neutral-800 whitespace-nowrap">
@@ -216,6 +226,14 @@ export default function WarehouseManagerStockReturnsPage() {
           </Button>
         </div>
       </div>
+
+      <ReturnsListFilters
+        filters={listFilters}
+        onChange={setListFilters}
+        statuses={uniqueReturnStatuses(returns)}
+        finYears={uniqueReturnFinYears(returns)}
+        executives={uniqueReturnExecutives(returns)}
+      />
 
       <Card className="p-4 md:p-6 border border-neutral-200 shadow-sm">
         <div className="overflow-x-auto">

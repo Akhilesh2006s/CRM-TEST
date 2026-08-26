@@ -1,10 +1,19 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { apiRequest } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { toast } from '@/hooks/use-toast'
+import { ReturnsListFilters } from '@/components/returns/ReturnsListFilters'
+import {
+  applyReturnsFilters,
+  EMPTY_RETURNS_FILTERS,
+  uniqueReturnExecutives,
+  uniqueReturnFinYears,
+  uniqueReturnStatuses,
+  type ReturnsListFilterState,
+} from '@/lib/returnsListFilter'
 
 type WarehouseReturn = {
   _id: string
@@ -22,6 +31,7 @@ export default function WarehouseReturnsPage() {
   const [loading, setLoading] = useState(false)
   const [submittingId, setSubmittingId] = useState<string | null>(null)
   const [list, setList] = useState<WarehouseReturn[]>([])
+  const [listFilters, setListFilters] = useState<ReturnsListFilterState>({ ...EMPTY_RETURNS_FILTERS })
 
   const load = async () => {
     setLoading(true)
@@ -41,6 +51,11 @@ export default function WarehouseReturnsPage() {
   useEffect(() => {
     load()
   }, [])
+
+  const filteredList = useMemo(
+    () => applyReturnsFilters(list, listFilters),
+    [list, listFilters]
+  )
 
   const submitReturn = async (returnId: string, returnNumber: number) => {
     if (!returnId) return
@@ -63,6 +78,14 @@ export default function WarehouseReturnsPage() {
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Warehouse Returns</h1>
 
+      <ReturnsListFilters
+        filters={listFilters}
+        onChange={setListFilters}
+        statuses={uniqueReturnStatuses(list)}
+        finYears={uniqueReturnFinYears(list)}
+        executives={uniqueReturnExecutives(list)}
+      />
+
       <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-medium">All Warehouse Returns</h2>
@@ -83,7 +106,7 @@ export default function WarehouseReturnsPage() {
               </tr>
             </thead>
             <tbody>
-              {list.map((r) => (
+              {filteredList.map((r) => (
                 <tr key={r._id} className="border-b">
                   <td className="py-2 pr-2">{r.returnNumber}</td>
                   <td className="py-2 pr-2">{new Date(r.returnDate).toLocaleDateString()}</td>
@@ -103,7 +126,7 @@ export default function WarehouseReturnsPage() {
                   </td>
                 </tr>
               ))}
-              {list.length === 0 && (
+              {filteredList.length === 0 && (
                 <tr>
                   <td className="py-3 text-muted-foreground" colSpan={8}>No returns</td>
                 </tr>

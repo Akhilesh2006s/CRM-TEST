@@ -100,6 +100,7 @@ export default function AllCreatedDCsPage() {
     currentUser?.role === 'Coordinator' || currentUser?.role === 'Senior Coordinator'
   // Super Admin / Admin / Coordinator — Create Sale auto-DCs list here.
   const canAccess = isSuperAdminUser || isAdmin || isCoordinator
+  const showRowActions = !isSuperAdminUser
 
   const load = async () => {
     setLoading(true)

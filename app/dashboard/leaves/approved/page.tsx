@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { apiRequest } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { usePermissions } from '@/components/permissions/PermissionsProvider'
+import { leaveTypeLabel } from '@/lib/leaveTypes'
 
 type Leave = {
   _id: string
@@ -63,7 +64,7 @@ export default function EmployeeApprovedLeavesPage() {
               )}
               {items.map((l) => (
                 <tr key={l._id} className="border-b last:border-0">
-                  <td className="py-2 px-3">{l.leaveType || '-'}</td>
+                  <td className="py-2 px-3">{leaveTypeLabel(l.leaveType)}</td>
                   <td className="py-2 px-3 text-center">
                     {new Date(l.startDate).toLocaleDateString()}
                   </td>
