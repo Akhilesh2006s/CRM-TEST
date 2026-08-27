@@ -455,14 +455,6 @@ const warehouseVerifyReturn = async (req, res) => {
     returnDoc.submittedToManagerAt = new Date();
 
     const hasMismatch = updatedProducts.some((p) => p.quantityMismatch);
-    if (hasMismatch) {
-      const missingRemark = updatedProducts.find((p) => p.quantityMismatch && !(p.mismatchRemark && String(p.mismatchRemark).trim()));
-      if (missingRemark) {
-        return res.status(400).json({
-          message: `Mismatch remark is required for ${missingRemark.product} when received quantity does not match requested quantity`,
-        });
-      }
-    }
     returnDoc.status = hasMismatch ? 'Pending Manager Approval' : 'Received';
 
     await returnDoc.save();
@@ -511,9 +503,19 @@ const managerAction = async (req, res) => {
             approvedQty: decision.approvedQty || 0,
             stockBucket: decision.stockBucket || '',
             managerRemark: decision.managerRemark || '',
+            mismatchRemark: decision.mismatchRemark || p.mismatchRemark || '',
           };
         }
         return p.toObject ? p.toObject() : p;
+      });
+    }
+
+    const missingMismatchRemark = returnDoc.products.find(
+      (p) => p.quantityMismatch && !(p.mismatchRemark && String(p.mismatchRemark).trim())
+    );
+    if (missingMismatchRemark) {
+      return res.status(400).json({
+        message: `Mismatch remark is required for ${missingMismatchRemark.product}`,
       });
     }
 

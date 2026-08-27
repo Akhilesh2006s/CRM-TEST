@@ -564,7 +564,7 @@ const listWarehouseManagerList = async (req, res) => {
     const filter = { sourceType: 'Executive' };
     if (req.query.status) filter.status = req.query.status;
     if (req.query.pending === 'true') {
-      filter.status = { $in: ['Received', 'Pending Manager Approval'] };
+      filter.status = { $in: ['WAREHOUSE_MANAGER_PENDING', 'Received', 'Pending Manager Approval'] };
     }
     const items = await StockReturn.find(filter)
       .populate(warehouseExecutivePopulate)
@@ -581,7 +581,7 @@ const listWarehouseManagerQueue = async (req, res) => {
   try {
     const items = await StockReturn.find({
       sourceType: 'Executive',
-      status: { $in: ['Received', 'Pending Manager Approval'] },
+      status: { $in: ['WAREHOUSE_MANAGER_PENDING', 'Received', 'Pending Manager Approval'] },
     })
       .populate(warehouseExecutivePopulate)
       .populate('verifiedBy', 'name email')
@@ -881,11 +881,6 @@ const warehouseVerifyReturn = async (req, res) => {
       if ((Number(p.receivedQty) || 0) > 0 && !p.condition) {
         return res.status(400).json({ message: `Condition is required for ${p.product}` });
       }
-      if (p.quantityMismatch && !(p.mismatchRemark && String(p.mismatchRemark).trim())) {
-        return res.status(400).json({
-          message: `Mismatch remark is required for ${p.product} when received quantity does not match requested quantity`,
-        });
-      }
     }
 
     returnDoc.products = updatedProducts;
@@ -896,7 +891,8 @@ const warehouseVerifyReturn = async (req, res) => {
     returnDoc.submittedToManagerAt = new Date();
 
     const hasMismatch = updatedProducts.some((p) => p.quantityMismatch);
-    returnDoc.status = hasMismatch ? 'Pending Manager Approval' : 'Received';
+    returnDoc.hasMismatch = hasMismatch;
+    returnDoc.status = 'WAREHOUSE_MANAGER_PENDING';
 
     await returnDoc.save();
 
@@ -941,9 +937,19 @@ const managerAction = async (req, res) => {
             approvedQty: decision.approvedQty || 0,
             stockBucket: decision.stockBucket || '',
             managerRemark: decision.managerRemark || '',
+            mismatchRemark: decision.mismatchRemark || p.mismatchRemark || '',
           };
         }
         return p.toObject ? p.toObject() : p;
+      });
+    }
+
+    const missingMismatchRemark = returnDoc.products.find(
+      (p) => p.quantityMismatch && !(p.mismatchRemark && String(p.mismatchRemark).trim())
+    );
+    if (missingMismatchRemark) {
+      return res.status(400).json({
+        message: `Mismatch remark is required for ${missingMismatchRemark.product}`,
       });
     }
 

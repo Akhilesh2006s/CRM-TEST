@@ -232,20 +232,13 @@ export default function WarehouseExecutiveReturnUpdatePage() {
       toast.error('No products on this return')
       return
     }
-    const missingQty = lines.find((l) => l.qty <= 0)
-    if (missingQty) {
-      toast.error(
-        `Enter received quantity for ${missingQty.productLabel || missingQty.productRaw || 'each product'}`
-      )
-      return
-    }
     setSubmitting(true)
     try {
       await apiRequest(`/stock-returns/${detail._id}/warehouse-verify`, {
         method: 'PUT',
         body: JSON.stringify(buildPayload()),
       })
-      toast.success('Submitted to Warehouse Manager')
+      toast.success('Stock return submitted to Warehouse Manager.')
       router.push('/dashboard/returns/warehouse-executive')
     } catch (e: any) {
       toast.error(e.message || 'Failed to submit')

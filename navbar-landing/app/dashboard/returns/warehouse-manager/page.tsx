@@ -78,12 +78,17 @@ function resolveRemarks(row: StockReturn): string {
 }
 
 function statusBadgeClass(status: string): string {
+  if (status === 'WAREHOUSE_MANAGER_PENDING') return 'bg-amber-100 text-amber-800'
   if (status === 'Pending Manager Approval') return 'bg-amber-100 text-amber-800'
   if (status === 'Received') return 'bg-blue-100 text-blue-800'
   if (status === 'Partially Approved') return 'bg-purple-100 text-purple-800'
   if (status === 'Stock Updated' || status === 'Approved') return 'bg-green-100 text-green-800'
   if (status === 'Rejected') return 'bg-red-100 text-red-800'
   return 'bg-neutral-100 text-neutral-700'
+}
+
+function statusLabel(status: string): string {
+  return status === 'WAREHOUSE_MANAGER_PENDING' ? 'Pending Manager Approval' : status
 }
 
 export default function WarehouseManagerStockReturnsPage() {
@@ -296,7 +301,7 @@ export default function WarehouseManagerStockReturnsPage() {
                       <span
                         className={`text-xs px-2 py-0.5 rounded font-medium ${statusBadgeClass(row.status)}`}
                       >
-                        {row.status}
+                        {statusLabel(row.status)}
                       </span>
                     </td>
                       <td className="py-2.5 px-3 text-center">

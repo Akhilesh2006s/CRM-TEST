@@ -74,15 +74,16 @@ const stockReturnSchema = new mongoose.Schema(
     totalItems: { type: Number, default: 0 },
     totalQuantity: { type: Number, default: 0 }, // Requested total quantity
     totalReceivedQty: { type: Number, default: 0 }, // Total received quantity
+    hasMismatch: { type: Boolean, default: false, index: true },
     returnValue: { type: Number, default: 0 },
     approvedReturnValue: { type: Number, default: 0 },
     paymentAdjustmentCreated: { type: Boolean, default: false },
     paymentAdjustmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
 
-    // Status workflow: Draft -> Submitted -> Received -> Pending Manager Approval -> Approved/Partially Approved/Rejected -> Stock Updated -> Closed
+    // Status workflow: Draft -> Submitted -> WAREHOUSE_MANAGER_PENDING -> Approved/Partially Approved/Rejected -> Stock Updated -> Closed
     status: { 
       type: String, 
-      enum: ['Draft', 'Submitted', 'Received', 'Pending Manager Approval', 'Approved', 'Partially Approved', 'Rejected', 'Sent Back', 'Stock Updated', 'Closed'], 
+      enum: ['Draft', 'Submitted', 'Received', 'Pending Manager Approval', 'WAREHOUSE_MANAGER_PENDING', 'Approved', 'Partially Approved', 'Rejected', 'Sent Back', 'Stock Updated', 'Closed'],
       default: 'Submitted',
       index: true
     },

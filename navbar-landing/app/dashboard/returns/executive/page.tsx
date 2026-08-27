@@ -1095,10 +1095,6 @@ export default function ExecutiveStockReturnsPage() {
             <div className="space-y-4 border-b pb-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold">Product Selection</h3>
-                <Button type="button" variant="outline" size="sm" onClick={addProductRow}>
-                  <PlusCircle className="w-4 h-4 mr-2" />
-                  Add Product
-                </Button>
               </div>
               
               {productRows.length === 0 ? (
@@ -1279,12 +1275,18 @@ export default function ExecutiveStockReturnsPage() {
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
                   <Label>Total Items Returned</Label>
-                  <Input value={productRows.length} readOnly className="bg-neutral-50" />
+                  <Input
+                    value={productRows.filter((r) => Number(r.returnQty) > 0).length}
+                    readOnly
+                    className="bg-neutral-50"
+                  />
                 </div>
                 <div>
                   <Label>Total Quantity</Label>
                   <Input 
-                    value={productRows.reduce((sum, r) => sum + r.returnQty, 0)} 
+                    value={productRows
+                      .filter((r) => Number(r.returnQty) > 0)
+                      .reduce((sum, r) => sum + Number(r.returnQty), 0)} 
                     readOnly 
                     className="bg-neutral-50" 
                   />

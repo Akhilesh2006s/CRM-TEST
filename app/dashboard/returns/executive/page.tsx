@@ -1095,10 +1095,6 @@ export default function ExecutiveStockReturnsPage() {
             <div className="space-y-4 border-b pb-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold">Product Selection</h3>
-                <Button type="button" variant="outline" size="sm" onClick={addProductRow}>
-                  <PlusCircle className="w-4 h-4 mr-2" />
-                  Add Product
-                </Button>
               </div>
               
               {productRows.length === 0 ? (
