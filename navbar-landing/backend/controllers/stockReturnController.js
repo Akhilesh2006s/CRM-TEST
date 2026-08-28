@@ -408,6 +408,15 @@ const warehouseVerifyReturn = async (req, res) => {
       status: bodyStatus,
     } = req.body;
 
+    if (Array.isArray(products)) {
+      const missingCondition = products.find((product) => !String(product.condition || '').trim());
+      if (missingCondition) {
+        return res.status(400).json({
+          message: `Product condition is required for ${missingCondition.product || 'every product'}`,
+        });
+      }
+    }
+
     const returnDoc = await StockReturn.findById(id);
     if (!returnDoc) {
       return res.status(404).json({ message: 'Return not found' });
@@ -499,9 +508,14 @@ const managerAction = async (req, res) => {
         if (decision) {
           return {
             ...p.toObject ? p.toObject() : p,
-            managerDecision: decision.managerDecision,
+            managerDecision: action === 'reject' ? 'Reject' : (decision.managerDecision || undefined),
             approvedQty: decision.approvedQty || 0,
-            stockBucket: decision.stockBucket || '',
+            // Rejected/sent-back lines do not belong to a stock bucket.
+            // Use undefined so Mongoose omits the optional enum field instead of validating "".
+            stockBucket:
+              action === 'reject' || decision.managerDecision === 'Reject' || decision.managerDecision === 'Send Back'
+                ? undefined
+                : (decision.stockBucket || undefined),
             managerRemark: decision.managerRemark || '',
             mismatchRemark: decision.mismatchRemark || p.mismatchRemark || '',
           };

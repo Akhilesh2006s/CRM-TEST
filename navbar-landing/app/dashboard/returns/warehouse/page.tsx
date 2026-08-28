@@ -25,6 +25,8 @@ type WarehouseReturn = {
   remarks?: string
   lrNumber?: string
   finYear?: string
+  dcOrderId?: { dc_code?: string } | string
+  saleId?: string
 }
 
 export default function WarehouseReturnsPage() {
@@ -96,6 +98,7 @@ export default function WarehouseReturnsPage() {
             <thead>
               <tr className="text-left border-b">
                 <th className="py-2 pr-2">Return #</th>
+                <th className="py-2 pr-2">DC Number</th>
                 <th className="py-2 pr-2">Return Date</th>
                 <th className="py-2 pr-2">LR No</th>
                 <th className="py-2 pr-2">Fin Year</th>
@@ -109,6 +112,11 @@ export default function WarehouseReturnsPage() {
               {filteredList.map((r) => (
                 <tr key={r._id} className="border-b">
                   <td className="py-2 pr-2">{r.returnNumber}</td>
+                  <td className="py-2 pr-2">
+                    {typeof r.dcOrderId === 'object' && r.dcOrderId?.dc_code
+                      ? r.dcOrderId.dc_code
+                      : r.saleId || '-'}
+                  </td>
                   <td className="py-2 pr-2">{new Date(r.returnDate).toLocaleDateString()}</td>
                   <td className="py-2 pr-2">{r.lrNumber || '-'}</td>
                   <td className="py-2 pr-2">{r.finYear || '-'}</td>
@@ -128,7 +136,7 @@ export default function WarehouseReturnsPage() {
               ))}
               {filteredList.length === 0 && (
                 <tr>
-                  <td className="py-3 text-muted-foreground" colSpan={8}>No returns</td>
+                  <td className="py-3 text-muted-foreground" colSpan={9}>No returns</td>
                 </tr>
               )}
             </tbody>
