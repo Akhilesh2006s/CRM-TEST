@@ -349,17 +349,6 @@ export default function DCAdminFullView() {
                 <InfoRow label="Phone" value={phone} />
                 <InfoRow label="Product" value={getProduct(d)} />
                 <InfoRow label="PO photo" value={d.poPhotoUrl ? 'Uploaded' : 'Not uploaded'} />
-                <View style={styles.actionBtns}>
-                  <View style={styles.actionBtn}>
-                    <WebButton
-                      title={d.poPhotoUrl ? 'Update Photo' : 'Add Photo'}
-                      onPress={() => openSubmitDialog(d)}
-                    />
-                  </View>
-                  <View style={styles.actionBtn}>
-                    <WebButton title="Raise DC" variant="outline" onPress={() => openRaiseDialog(d)} />
-                  </View>
-                </View>
               </View>
             );
           })}

@@ -38,7 +38,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     checkAuth();
   }, []);
 
-  // Debug: Log auth state
   useEffect(() => {
     console.log('Auth state:', { user: user?.email || 'null', loading, isFirstTime: user ? !user.hasCompletedFirstTimeSetup : false });
   }, [user, loading]);
@@ -68,14 +67,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('Attempting login with mobile:', mobile);
       const response = await apiService.post('/auth/login', { mobile, email: mobile, password });
       const { token, ...userData } = response;
-      
+
       if (!token) {
         throw new Error('No token received from server');
       }
-      
+
       await AsyncStorage.setItem('authToken', token);
       await AsyncStorage.setItem('userData', JSON.stringify(userData));
-      
+
       apiService.setToken(token);
       const id = userData?._id || userData?.id;
       setUser(id ? { ...userData, _id: id } : userData);
@@ -87,29 +86,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: error.response?.status,
         code: error.code,
       });
-      
-      // Handle 401 Unauthorized (invalid credentials)
+
       if (error.response?.status === 401) {
         const errorMessage = error.response?.data?.message || 'Invalid mobile number, email, or password';
         throw new Error(errorMessage);
       }
-      
-      // Handle network errors
-      if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.message?.includes('Network Error') || error.message?.includes('timeout')) {
+
+      if (
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ETIMEDOUT' ||
+        error.message?.includes('Network Error') ||
+        error.message?.includes('timeout')
+      ) {
         throw new Error('Cannot connect to server. Make sure the backend is running on port 5000.');
       }
-      
-      // Handle other axios errors
+
       if (error.response?.data?.message) {
         throw new Error(error.response.data.message);
       }
-      
-      // Handle custom error messages
+
       if (error.message && !error.message.includes('Request failed')) {
         throw error;
       }
-      
-      // Default error message
+
       throw new Error(error.message || 'Login failed. Please check your credentials and try again.');
     }
   };
@@ -118,11 +117,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     apiService.setToken('');
     try {
-      await AsyncStorage.multiRemove(['authToken', 'userData', 'authUser']);
+      await AsyncStorage.multiRemove(['authToken', 'userData', 'authUser', 'adminSessionBackup']);
     } catch (e) {
       await AsyncStorage.removeItem('authToken');
       await AsyncStorage.removeItem('userData');
       await AsyncStorage.removeItem('authUser');
+      await AsyncStorage.removeItem('adminSessionBackup');
     }
   };
 
@@ -142,4 +142,3 @@ export const useAuth = () => {
   }
   return context;
 };
-

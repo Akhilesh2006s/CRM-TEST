@@ -11,6 +11,7 @@ import {
   FlatList,
   Image,
   Platform,
+  Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -39,6 +40,34 @@ function dcNoFrom(dc: any) {
   return `DC-${dcId.slice(-6)}`;
 }
 
+function productQuantity(product: any): number {
+  for (const value of [
+    product?.deliveredQuantity,
+    product?.deliverableQuantity,
+    product?.quantity,
+    product?.strength,
+    product?.qty,
+    product?.requestedQuantity,
+  ]) {
+    const quantity = Number(value);
+    if (Number.isFinite(quantity) && quantity > 0) return quantity;
+  }
+  return 0;
+}
+
+function productUnitPrice(product: any): number {
+  const prices = [product?.unit_price, product?.unitPrice, product?.price];
+  const positivePrice = prices.find((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+  if (positivePrice !== undefined) return Number(positivePrice);
+  // Older DC records can have an empty unit-price field while still retaining
+  // the line total. Recover the original price from that total when possible.
+  const total = Number(product?.total ?? product?.totalAmount ?? product?.amount);
+  const quantity = productQuantity(product);
+  if (Number.isFinite(total) && total > 0 && quantity > 0) return total / quantity;
+  const storedPrice = prices.find((value) => Number.isFinite(Number(value)));
+  return storedPrice === undefined ? 0 : Number(storedPrice);
+}
+
 function loadCompletedDcOptions(dcs: any[]) {
   return dcs
     .map((dc) => mapCompletedDcToOption(dc))
@@ -50,10 +79,8 @@ function normalizeDcProducts(dc: any, order: any | null) {
   const fromDetails = productDetails
     .map((p: any) => ({
       product_name: String(p.product || p.productName || p.product_name || '').trim(),
-      quantity: Number(
-        p.deliveredQuantity ?? p.deliverableQuantity ?? p.quantity ?? p.strength ?? 0
-      ),
-      unit_price: Number(p.price ?? p.unit_price ?? p.unitPrice ?? 0),
+      quantity: productQuantity(p),
+      unit_price: productUnitPrice(p),
     }))
     .filter((p: { product_name: string }) => p.product_name);
 
@@ -63,8 +90,8 @@ function normalizeDcProducts(dc: any, order: any | null) {
     ? order.products
         .map((p: any) => ({
           product_name: String(p.product_name || p.product || '').trim(),
-          quantity: Number(p.quantity ?? p.strength ?? 0),
-          unit_price: Number(p.unit_price ?? 0),
+          quantity: productQuantity(p),
+          unit_price: productUnitPrice(p),
         }))
         .filter((p: { product_name: string }) => p.product_name)
     : [];
@@ -75,13 +102,7 @@ function normalizeDcProducts(dc: any, order: any | null) {
     return [
       {
         product_name: String(dc.product).trim(),
-        quantity: Number(
-          dc.deliverableQuantity ??
-            dc.deliveredQuantity ??
-            dc.requestedQuantity ??
-            dc.quantity ??
-            0
-        ),
+        quantity: productQuantity(dc),
         unit_price: 0,
       },
     ];
@@ -130,12 +151,21 @@ function DateField({
   value,
   onChange,
   required,
+  minDate,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   required?: boolean;
+  minDate?: string;
 }) {
+  const changeDate = (nextValue: string) => {
+    if (minDate && nextValue && nextValue < minDate) {
+      Alert.alert('Invalid date', `${label} cannot be earlier than today.`);
+      return;
+    }
+    onChange(nextValue);
+  };
   return (
     <View style={{ marginBottom: 12 }}>
       <Text style={formStyles.label}>
@@ -146,7 +176,8 @@ function DateField({
         React.createElement('input', {
           type: 'date',
           value: value || '',
-          onChange: (e: any) => onChange(e.target.value || ''),
+          min: minDate,
+          onChange: (e: any) => changeDate(e.target.value || ''),
           style: {
             width: '100%',
             padding: 12,
@@ -159,10 +190,46 @@ function DateField({
           },
         })
       ) : (
-        <WebInput value={value} onChangeText={onChange} placeholder="YYYY-MM-DD" />
+        <WebInput value={value} onChangeText={changeDate} placeholder="YYYY-MM-DD" />
       )}
     </View>
   );
+}
+
+function localTodayDate() {
+  const today = new Date();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${today.getFullYear()}-${month}-${day}`;
+}
+
+function FutureCalendarField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const today = localTodayDate();
+  const [month, setMonth] = useState(() => {
+    const source = value ? new Date(`${value}T00:00:00`) : new Date();
+    return new Date(source.getFullYear(), source.getMonth(), 1);
+  });
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const firstDay = month.getDay();
+  const changeMonth = (offset: number) => setMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  const isCurrentMonth = month.getFullYear() === new Date().getFullYear() && month.getMonth() === new Date().getMonth();
+  const display = value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Select return date';
+
+  return <View style={{ marginBottom: 12 }}>
+    <Text style={formStyles.label}>{label} *</Text>
+    <TouchableOpacity style={calendarStyles.field} onPress={() => setOpen(true)}><Text style={calendarStyles.fieldText}>{display}</Text><Text style={calendarStyles.icon}>▣</Text></TouchableOpacity>
+    <Modal transparent visible={open} animationType="fade" onRequestClose={() => setOpen(false)}>
+      <View style={calendarStyles.overlay}><View style={calendarStyles.modal}>
+        <View style={calendarStyles.header}><TouchableOpacity onPress={() => changeMonth(-1)} disabled={isCurrentMonth} style={[calendarStyles.nav, isCurrentMonth && calendarStyles.navDisabled]}><Text style={calendarStyles.navText}>‹</Text></TouchableOpacity><Text style={calendarStyles.monthTitle}>{month.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</Text><TouchableOpacity onPress={() => changeMonth(1)} style={calendarStyles.nav}><Text style={calendarStyles.navText}>›</Text></TouchableOpacity></View>
+        <View style={calendarStyles.grid}>{['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => <Text key={day} style={calendarStyles.weekday}>{day}</Text>)}
+          {Array.from({ length: firstDay }).map((_, index) => <View key={`blank-${index}`} style={calendarStyles.day} />)}
+          {Array.from({ length: daysInMonth }).map((_, index) => { const day = index + 1; const date = new Date(month.getFullYear(), month.getMonth(), day); const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; if (iso < today) return <View key={day} style={calendarStyles.day} />; return <TouchableOpacity key={day} style={[calendarStyles.day, value === iso && calendarStyles.selectedDay]} onPress={() => { onChange(iso); setOpen(false); }}><Text style={[calendarStyles.dayText, value === iso && calendarStyles.selectedDayText]}>{day}</Text></TouchableOpacity>; })}
+        </View>
+        <TouchableOpacity style={calendarStyles.closeButton} onPress={() => setOpen(false)}><Text style={calendarStyles.closeText}>Cancel</Text></TouchableOpacity>
+      </View></View>
+    </Modal>
+  </View>;
 }
 
 const NEXT_ACTION_BY_STATUS: Record<string, string> = {
@@ -249,9 +316,9 @@ function productsToRows(order: any): ProductRow[] {
   return list.map((p: any, i: number) => ({
     id: `row-${order._id}-${i}`,
     product: p.product_name || p.product || '',
-    soldQty: Number(p.quantity) || 0,
+    soldQty: productQuantity(p),
     returnQty: '',
-    unitPrice: String(p.unit_price ?? p.unitPrice ?? p.price ?? ''),
+    unitPrice: String(productUnitPrice(p)),
     reason: '',
     remarks: '',
   }));
@@ -449,12 +516,21 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
         quality: 0.8,
       });
       if (result.canceled || !result.assets[0]) return;
-      const uri = result.assets[0].uri;
+      const asset = result.assets[0];
+      const uri = asset.uri;
       setUploadingPhoto(true);
       const formData = new FormData();
-      const filename = uri.split('/').pop() || 'photo.jpg';
-      const type = 'image/jpeg';
-      formData.append('photo', { uri, name: filename, type } as any);
+      const filename = asset.fileName || uri.split('/').pop() || 'photo.jpg';
+      const type = asset.mimeType || (asset as any).file?.type || 'image/jpeg';
+      if (Platform.OS === 'web') {
+        // Browser uploads require a File/Blob; the React Native { uri, name, type }
+        // object only works on native devices.
+        const webFile = (asset as any).file;
+        const blob = webFile || (await fetch(uri).then((response) => response.blob()));
+        formData.append('photo', blob as any, filename);
+      } else {
+        formData.append('photo', { uri, name: filename, type } as any);
+      }
       const token = await AsyncStorage.getItem('authToken');
       const baseURL = getApiUrl();
       const response = await fetch(`${baseURL}/stock-returns/upload-photo`, {
@@ -495,12 +571,26 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
     );
   };
 
-  const productsValid = productRows.length > 0 && productRows.every((r) => {
-    const q = parseInt(r.returnQty, 10);
-    return !isNaN(q) && q > 0 && q <= r.soldQty && (r.reason || '').trim() !== '';
+  // A DC can contain products that are not part of this return.  Leave those
+  // rows at zero; only rows with a return quantity need a reason.
+  const returnedProductRows = productRows.filter(
+    (r) => parseInt(r.returnQty, 10) > 0
+  );
+  const hasInvalidReturnQuantity = productRows.some((r) => {
+    const rawQuantity = String(r.returnQty ?? '').trim();
+    if (!rawQuantity || rawQuantity === '0') return false;
+
+    const quantity = parseInt(rawQuantity, 10);
+    return !Number.isInteger(quantity) || quantity <= 0 || quantity > r.soldQty;
   });
+  const productsValid =
+    returnedProductRows.length > 0 &&
+    !hasInvalidReturnQuantity &&
+    returnedProductRows.every((r) => (r.reason || '').trim() !== '');
   const evidenceRequired = returnType === 'Damaged' || returnType === 'Expired';
-  const evidenceOk = !evidenceRequired || (evidencePhotos.length > 0 && (executiveRemarks || '').trim() !== '');
+  const evidenceOk =
+    evidencePhotos.length > 0 &&
+    (!evidenceRequired || (executiveRemarks || '').trim() !== '');
   const canSubmit =
     productsValid &&
     evidenceOk &&
@@ -581,7 +671,7 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
     if (!canSubmit) {
       Alert.alert(
         'Validation',
-        'Please complete all required fields: Customer, Sale/DC, Warehouse, Return Date & Type, LR No, Fin Year, at least one product with Return Qty and Reason. For Damaged/Expired, add photo and remarks.'
+        'Please complete all required fields: Customer, Sale/DC, Warehouse, Return Date & Type, LR No, Fin Year, at least one product with Return Qty and Reason, and at least one photo. Damaged/Expired returns also require executive remarks.'
       );
       return;
     }
@@ -756,7 +846,7 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
             items={warehouseLocations.map((w) => ({ label: w, value: w }))}
           />
 
-          <DateField label="Return Date" value={returnDate} onChange={setReturnDate} required />
+          <FutureCalendarField label="Return Date" value={returnDate} onChange={setReturnDate} />
 
           <WebSelect
             label="Return Type *"
@@ -783,7 +873,7 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
             placeholder="Lorry receipt number from delivery partner"
           />
 
-          <DateField label="LR Date" value={lrDate} onChange={setLrDate} required />
+          <DateField label="LR Date" value={lrDate} onChange={setLrDate} required minDate={localTodayDate()} />
 
           <Text style={formStyles.label}>Fin Year *</Text>
           <WebInput
@@ -874,10 +964,12 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
                           onValueChange={(v) => {
                             updateProductRow(row.id, 'product', v);
                             const dcOrder = completedDcs.find((o) => o._id === selectedCompletedDcId);
-                            const op = dcOrder?.products?.find((p: any) => (p.product_name || '') === v);
+                            const op = dcOrder?.products?.find(
+                              (p: any) => (p.product_name || p.product || '') === v,
+                            );
                             if (op) {
-                              updateProductRow(row.id, 'soldQty', Number(op.quantity) || 0);
-                              updateProductRow(row.id, 'unitPrice', String(op.unit_price ?? op.price ?? ''));
+                              updateProductRow(row.id, 'soldQty', productQuantity(op));
+                              updateProductRow(row.id, 'unitPrice', String(productUnitPrice(op)));
                             }
                           }}
                           placeholder="Select product"
@@ -943,12 +1035,13 @@ export default function StockReturnAddScreen({ navigation, route }: any) {
         <View style={formStyles.section}>
           <Text style={styles.sectionTitle}>
             Evidence & Remarks
-            {evidenceRequired ? ' *' : ''}
+            {' *'}
           </Text>
+          <Text style={styles.warningText}>At least one photo is mandatory for every stock return.</Text>
           {evidenceRequired && (
-            <Text style={styles.warningText}>Photo and executive remarks are mandatory for Damaged/Expired.</Text>
+            <Text style={styles.warningText}>Executive remarks are also mandatory for Damaged/Expired.</Text>
           )}
-          <Text style={formStyles.label}>Photo Upload</Text>
+          <Text style={formStyles.label}>Photo Upload *</Text>
           <TouchableOpacity style={styles.photoButton} onPress={addPhoto} disabled={uploadingPhoto}>
             {uploadingPhoto ? (
               <ActivityIndicator color={colors.primary} />
@@ -1362,4 +1455,13 @@ const viewStyles = StyleSheet.create({
     color: colors.textLight,
     fontWeight: '600',
   },
+});
+
+const calendarStyles = StyleSheet.create({
+  field: { height: 48, borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: '#fff', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  fieldText: { ...typography.body.medium, color: colors.textPrimary }, icon: { color: colors.primary, fontSize: 18 },
+  overlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 20 }, modal: { backgroundColor: '#fff', borderRadius: 16, padding: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }, monthTitle: { ...typography.heading.h3, color: colors.textPrimary }, nav: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#eff6ff' }, navDisabled: { opacity: 0.35 }, navText: { fontSize: 28, color: colors.primary, lineHeight: 30 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap' }, weekday: { width: '14.285%', textAlign: 'center', ...typography.label.small, color: colors.textSecondary, paddingBottom: 7 }, day: { width: '14.285%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', marginVertical: 1 }, dayText: { ...typography.body.medium, color: colors.textPrimary }, selectedDay: { backgroundColor: colors.primary, borderRadius: 18 }, selectedDayText: { color: '#fff', fontWeight: '700' },
+  closeButton: { alignItems: 'center', paddingTop: 14 }, closeText: { ...typography.body.medium, color: colors.primary, fontWeight: '600' },
 });

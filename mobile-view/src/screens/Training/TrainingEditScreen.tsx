@@ -1,109 +1,615 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, Alert, ActivityIndicator } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  Linking,
+  TouchableOpacity,
+  Platform,
+  ActionSheetIOS,
+} from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
-import { apiService } from '../../services/api';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
+import { apiService, getApiUrl } from '../../services/api';
+import { prepareFeedbackUpload } from '../../utils/prepareFeedbackUpload';
+import { showAlert } from '../../utils/showAlert';
+
+type Training = {
+  _id: string;
+  schoolCode?: string;
+  schoolName?: string;
+  zone?: string;
+  town?: string;
+  subject?: string;
+  trainerId?: { _id: string; name?: string };
+  trainingDate?: string;
+  remarks?: string;
+  status?: 'Scheduled' | 'Completed' | 'Cancelled' | string;
+  feedbackPdfUrl?: string;
+  poImageUrl?: string;
+};
+
+function getUploadsBaseUrl(): string {
+  return getApiUrl().replace(/\/api\/?$/, '');
+}
+
+function extractFeedbackUrl(raw: any): string | undefined {
+  if (!raw) return undefined;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  const nested =
+    raw.feedbackPdfUrl ||
+    raw.poImageUrl ||
+    raw.training?.feedbackPdfUrl ||
+    raw.training?.poImageUrl ||
+    raw.data?.feedbackPdfUrl ||
+    raw.data?.training?.feedbackPdfUrl;
+  if (typeof nested === 'string' && nested.trim()) return nested.trim();
+  return undefined;
+}
+
+function buildPdfUrl(raw: string | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('data:')) return trimmed;
+  const base = getUploadsBaseUrl();
+  let path: string;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const u = new URL(trimmed);
+      path = `${u.pathname}${u.search}` || `/${trimmed.split('/').pop() || 'file'}`;
+    } catch {
+      path = `/${trimmed.split('/').pop() || 'file'}`;
+    }
+    if (!path.startsWith('/')) path = `/${path}`;
+  } else {
+    path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+  return `${base}${path}`;
+}
+
+function pdfFileName(url?: string) {
+  if (!url) return 'feedback.pdf';
+  try {
+    const cleaned = url.split('?')[0];
+    const name = cleaned.split('/').pop() || 'feedback.pdf';
+    return decodeURIComponent(name) || 'feedback.pdf';
+  } catch {
+    return 'feedback.pdf';
+  }
+}
+
+function formatDateInput(dateString?: string) {
+  if (!dateString) return '';
+  try {
+    return new Date(dateString).toISOString().split('T')[0];
+  } catch {
+    return '';
+  }
+}
 
 export default function TrainingEditScreen({ navigation, route }: any) {
   const { id } = route.params;
-  const [form, setForm] = useState<any>({});
+  const [training, setTraining] = useState<Training | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadingFeedback, setUploadingFeedback] = useState(false);
+  const [feedbackPdfUrl, setFeedbackPdfUrl] = useState<string | undefined>();
+  const [status, setStatus] = useState<'' | 'Completed' | 'Cancelled'>('');
+  const [remarks, setRemarks] = useState('');
+  const [statusError, setStatusError] = useState('');
+  const [feedbackError, setFeedbackError] = useState('');
+  const [feedbackNotice, setFeedbackNotice] = useState('');
+  const webFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    loadTraining();
-  }, [id]);
-
-  const loadTraining = async () => {
+  const loadTraining = useCallback(async () => {
     try {
       setLoading(true);
-      const training = await apiService.get(`/training/${id}`);
-      setForm(training);
+      const data = await apiService.get(`/training/${id}`);
+      const resolved = (data as any)?.training || (data as any)?.data || data;
+      if (!resolved || !(resolved as Training)._id) {
+        Alert.alert('Error', 'Training not found', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+        return;
+      }
+      const row = resolved as Training;
+      setTraining(row);
+      setStatus(
+        row.status === 'Completed' || row.status === 'Cancelled' ? row.status : '',
+      );
+      setRemarks(row.remarks || '');
+      setFeedbackPdfUrl(extractFeedbackUrl(row) || extractFeedbackUrl(data));
+      setStatusError('');
+      setFeedbackError('');
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load training');
-      navigation.goBack();
+      Alert.alert('Error', error?.message || 'Failed to load training', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
     } finally {
       setLoading(false);
     }
+  }, [id, navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadTraining();
+    }, [loadTraining]),
+  );
+
+  const address = [training?.zone, training?.town].filter(Boolean).join(', ');
+  const resolvedPdfUrl = buildPdfUrl(feedbackPdfUrl);
+
+  const uploadPickedAsset = async (asset: {
+    uri: string;
+    name?: string | null;
+    mimeType?: string | null;
+    file?: File | null;
+  }) => {
+    setUploadingFeedback(true);
+    setFeedbackError('');
+    setFeedbackNotice('Processing file…');
+    try {
+      const prepared = await prepareFeedbackUpload(asset);
+      setFeedbackNotice('Uploading PDF…');
+      const formData = new FormData();
+      if (
+        Platform.OS === 'web' ||
+        (typeof Blob !== 'undefined' && prepared.blobOrFile instanceof Blob)
+      ) {
+        formData.append('feedback', prepared.blobOrFile as Blob, prepared.fileName);
+      } else {
+        formData.append('feedback', prepared.blobOrFile as any);
+      }
+
+      const res = await apiService.upload(`/training/${id}/upload-feedback`, formData);
+      const uploaded = extractFeedbackUrl(res);
+      if (!uploaded) {
+        throw new Error('Upload succeeded but no PDF URL was returned');
+      }
+      setFeedbackPdfUrl(uploaded);
+      setFeedbackError('');
+      setFeedbackNotice('Uploaded successfully. Tap View to open the PDF.');
+      showAlert('Success', 'Feedback converted to PDF and uploaded');
+      try {
+        const data = await apiService.get(`/training/${id}`);
+        const resolved = (data as any)?.training || (data as any)?.data || data;
+        const url = extractFeedbackUrl(resolved) || extractFeedbackUrl(data) || uploaded;
+        if (url) setFeedbackPdfUrl(url);
+      } catch (_) {
+        /* keep local uploaded URL */
+      }
+    } catch (e: any) {
+      const msg = e?.message || 'Failed to upload feedback';
+      setFeedbackError(msg);
+      setFeedbackNotice('');
+      showAlert('Upload failed', msg);
+    } finally {
+      setUploadingFeedback(false);
+    }
+  };
+
+  const pickFromGallery = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      showAlert('Permission needed', 'Photo library access is required.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    await uploadPickedAsset({
+      uri: asset.uri,
+      name: asset.fileName || 'feedback.jpg',
+      mimeType: asset.mimeType || 'image/jpeg',
+    });
+  };
+
+  const pickFromCamera = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      showAlert('Permission needed', 'Camera access is required.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    await uploadPickedAsset({
+      uri: asset.uri,
+      name: asset.fileName || 'feedback.jpg',
+      mimeType: asset.mimeType || 'image/jpeg',
+    });
+  };
+
+  const pickPdfFile = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['application/pdf', 'image/*'],
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const file = result.assets[0];
+    await uploadPickedAsset({
+      uri: file.uri,
+      name: file.name,
+      mimeType: file.mimeType,
+      file: (file as any).file || null,
+    });
+  };
+
+  const pickWebFile = () => {
+    if (typeof document === 'undefined') {
+      void pickPdfFile();
+      return;
+    }
+    let input = webFileInputRef.current;
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*,application/pdf,.pdf,.jpg,.jpeg,.png';
+      input.style.display = 'none';
+      input.onchange = () => {
+        const file = input?.files?.[0];
+        if (!file) return;
+        const uri = URL.createObjectURL(file);
+        void uploadPickedAsset({
+          uri,
+          name: file.name,
+          mimeType: file.type,
+          file,
+        }).finally(() => {
+          try {
+            URL.revokeObjectURL(uri);
+          } catch (_) {
+            /* ignore */
+          }
+          if (input) input.value = '';
+        });
+      };
+      document.body.appendChild(input);
+      webFileInputRef.current = input;
+    }
+    input.click();
+  };
+
+  const pickFeedbackPdf = () => {
+    if (Platform.OS === 'web') {
+      pickWebFile();
+      return;
+    }
+
+    const open = (key: string) => {
+      if (key === 'gallery') void pickFromGallery();
+      else if (key === 'camera') void pickFromCamera();
+      else if (key === 'file') void pickPdfFile();
+    };
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Cancel', 'Photo Library', 'Camera', 'PDF / File'],
+          cancelButtonIndex: 0,
+        },
+        (index) => {
+          if (index === 1) open('gallery');
+          else if (index === 2) open('camera');
+          else if (index === 3) open('file');
+        },
+      );
+      return;
+    }
+
+    void pickFromGallery();
+  };
+
+  const viewFeedback = () => {
+    if (!resolvedPdfUrl) {
+      showAlert('No document', 'Feedback PDF is not available.');
+      return;
+    }
+    Linking.openURL(resolvedPdfUrl).catch(() =>
+      showAlert('Error', 'Could not open feedback PDF'),
+    );
   };
 
   const handleSubmit = async () => {
+    const nextStatus = status.trim() as '' | 'Completed' | 'Cancelled';
+    if (!nextStatus) {
+      setStatusError('Training Status is required.');
+      return;
+    }
+    setStatusError('');
+
+    if (nextStatus === 'Completed' && !feedbackPdfUrl) {
+      setFeedbackError('Please upload the feedback form (PDF) for completed training.');
+      return;
+    }
+    setFeedbackError('');
+
     setSubmitting(true);
     try {
-      await apiService.put(`/training/${id}`, form);
+      const payload: Record<string, string> = { status: nextStatus };
+      if (remarks) payload.remarks = remarks;
+      await apiService.put(`/training/${id}`, payload);
       Alert.alert('Success', 'Training updated successfully', [
-        { text: 'OK', onPress: () => navigation.goBack() },
+        { text: 'OK', onPress: () => navigation.navigate('TrainingList') },
       ]);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to update training');
+      Alert.alert('Error', error?.message || 'Failed to update training');
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Loading training...</Text>
-      </View>
-    );
-  }
-
   return (
     <ScreenShell
-      title="Edit Training"
+      title="Viswam Edutech - Trainings"
+      subtitle="Edit Training Details"
       loading={loading}
+      noScroll
     >
-<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        <FormField label="School Name" value={form.schoolName || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, schoolName: text }))} placeholder="Enter school name" />
-        <FormField label="Subject" value={form.subject || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, subject: text }))} placeholder="Enter subject" />
-        <FormField label="Training Date" value={form.trainingDate || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, trainingDate: text }))} placeholder="YYYY-MM-DD" />
-        <FormField label="Term" value={form.term || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, term: text }))} placeholder="Enter term" />
-        <FormField label="Training Level" value={form.trainingLevel || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, trainingLevel: text }))} placeholder="Enter level" />
-        <View style={styles.textAreaContainer}>
-          <Text style={styles.label}>Remarks</Text>
-          <WebInput style={styles.textArea} value={form.remarks || ''} onChangeText={(text: string) => setForm((f: any) => ({ ...f, remarks: text }))} placeholder="Enter remarks" multiline numberOfLines={4} />
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.card}>
+          <WebLabel>School Code</WebLabel>
+          <WebInput value={training?.schoolCode || ''} editable={false} style={styles.readonly} />
+
+          <WebLabel>School Name</WebLabel>
+          <WebInput value={training?.schoolName || ''} editable={false} style={styles.readonly} />
+
+          <WebLabel>Address</WebLabel>
+          <WebInput value={address || ''} editable={false} style={styles.readonly} />
+
+          <WebLabel>Product</WebLabel>
+          <WebInput value={training?.subject || ''} editable={false} style={styles.readonly} />
+
+          <WebLabel>Trainer</WebLabel>
+          <WebInput
+            value={training?.trainerId?.name || ''}
+            editable={false}
+            style={styles.readonly}
+          />
+
+          <WebLabel>Previous Scheduled Date</WebLabel>
+          <WebInput value="" editable={false} style={styles.readonly} />
+
+          <WebLabel>Previous Schedule Remarks</WebLabel>
+          <WebInput value="" editable={false} style={styles.readonly} />
+
+          <WebLabel>Training Date</WebLabel>
+          <WebInput
+            value={formatDateInput(training?.trainingDate)}
+            editable={false}
+            style={styles.readonly}
+          />
+
+          <WebLabel>Training Status *</WebLabel>
+          <WebSelect
+            placeholder="Select Training Status"
+            value={status}
+            onValueChange={(v) => {
+              const next = (v === 'Completed' || v === 'Cancelled' ? v : '') as
+                | ''
+                | 'Completed'
+                | 'Cancelled';
+              setStatus(next);
+              setStatusError('');
+              if (next !== 'Completed') setFeedbackError('');
+            }}
+            items={[
+              { label: 'Completed', value: 'Completed' },
+              { label: 'Cancelled', value: 'Cancelled' },
+            ]}
+          />
+          {statusError ? <Text style={styles.errorText}>{statusError}</Text> : null}
+
+          <WebLabel>Remarks</WebLabel>
+          <WebInput
+            value={remarks}
+            onChangeText={setRemarks}
+            placeholder="Enter remarks (optional)"
+            multiline
+            numberOfLines={4}
+            style={styles.textArea}
+          />
+
+          <View style={styles.feedbackBox}>
+            <Text style={styles.feedbackTitle}>Feedback Form (PDF) *</Text>
+            <Text style={styles.feedbackHint}>
+              Upload a signed feedback image or PDF. Images (JPG/PNG) are converted to PDF
+              automatically.
+            </Text>
+
+            {feedbackPdfUrl ? (
+              <View style={styles.uploadedCard}>
+                <Ionicons name="document-text-outline" size={22} color="#1D4ED8" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.uploadedLabel}>Uploaded PDF</Text>
+                  <Text style={styles.uploadedName} numberOfLines={2}>
+                    {pdfFileName(feedbackPdfUrl)}
+                  </Text>
+                </View>
+                <TouchableOpacity style={styles.viewBtn} onPress={viewFeedback}>
+                  <Ionicons name="eye-outline" size={16} color="#1D4ED8" />
+                  <Text style={styles.viewBtnText}>View</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <Text style={styles.missingPdf}>No feedback PDF uploaded yet.</Text>
+            )}
+            {feedbackNotice ? <Text style={styles.noticeText}>{feedbackNotice}</Text> : null}
+
+            <View style={styles.feedbackActions}>
+              <TouchableOpacity
+                style={styles.uploadBtn}
+                onPress={pickFeedbackPdf}
+                disabled={uploadingFeedback}
+              >
+                <Ionicons name="cloud-upload-outline" size={16} color="#0F172A" />
+                <Text style={styles.uploadBtnText}>
+                  {uploadingFeedback
+                    ? 'Uploading...'
+                    : feedbackPdfUrl
+                      ? 'Replace Image / PDF'
+                      : 'Upload Image / PDF'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {feedbackError ? <Text style={styles.errorText}>{feedbackError}</Text> : null}
+          </View>
+
+          <View style={styles.footer}>
+            <WebButton title="Cancel" variant="outline" onPress={() => navigation.goBack()} />
+            <WebButton
+              title={submitting ? 'Updating...' : 'Update Training'}
+              onPress={handleSubmit}
+              disabled={submitting}
+              loading={submitting}
+            />
+          </View>
         </View>
-        <TouchableOpacity style={[styles.submitButton, submitting && styles.submitButtonDisabled]} onPress={handleSubmit} disabled={submitting}>
-          </TouchableOpacity>
       </ScrollView>
     </ScreenShell>
   );
 }
 
-function FormField({ label, value, onChangeText, placeholder }: any) {
-  return (
-    <View style={styles.fieldContainer}>
-      <Text style={styles.label}>{label}</Text>
-      <WebInput style={styles.input} value={value} onChangeText={onChangeText} placeholder={placeholder} />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
   content: { flex: 1 },
-  contentContainer: { padding: 20, paddingBottom: 40 },
-  fieldContainer: { marginBottom: 16 },
-  label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 8 },
-  input: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, color: colors.textPrimary },
-  textAreaContainer: { marginBottom: 16 },
-  textArea: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, color: colors.textPrimary, minHeight: 100, textAlignVertical: 'top' },
-  submitButton: { marginTop: 24, borderRadius: 12, overflow: 'hidden' },
-  submitButtonDisabled: { opacity: 0.6 },
-  submitButtonGradient: { paddingVertical: 16, alignItems: 'center' },
-  submitButtonText: { ...typography.label.large, color: colors.textLight, fontWeight: '600' },
+  contentContainer: { padding: 16, paddingBottom: 40 },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 16,
+    gap: 6,
+  },
+  readonly: {
+    backgroundColor: '#F8FAFC',
+    color: '#0F172A',
+  },
+  textArea: {
+    minHeight: 96,
+    textAlignVertical: 'top',
+    marginBottom: 8,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 13,
+    marginBottom: 8,
+    marginTop: -2,
+  },
+  feedbackBox: {
+    marginTop: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    padding: 14,
+    gap: 8,
+  },
+  feedbackTitle: {
+    ...typography.label.medium,
+    color: colors.textPrimary,
+    fontWeight: '700',
+  },
+  feedbackHint: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+  },
+  missingPdf: {
+    ...typography.body.small,
+    color: '#B45309',
+    backgroundColor: '#FFFBEB',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  noticeText: {
+    ...typography.body.small,
+    color: '#047857',
+    backgroundColor: '#ECFDF5',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  uploadedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  uploadedLabel: {
+    ...typography.label.small,
+    color: '#1E40AF',
+    fontWeight: '700',
+  },
+  uploadedName: {
+    ...typography.body.small,
+    color: '#1E3A8A',
+    marginTop: 2,
+  },
+  feedbackActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  uploadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+  },
+  uploadBtnText: {
+    color: '#0F172A',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  viewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  viewBtnText: {
+    color: '#1D4ED8',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  footer: {
+    marginTop: 16,
+    gap: 10,
+  },
 });
-
-

@@ -5,7 +5,7 @@ import { getApiUrl } from '../services/api';
 
 export async function downloadApiFile(queryString: string) {
   const suffix = queryString ? `?${queryString}` : '';
-  const url = `${getApiUrl()}/change-logs/export${suffix}`;
+  const url = `${getApiUrl()}/reports/change-logs/export${suffix}`;
   const filename = `Change_Logs_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
   const token = await AsyncStorage.getItem('authToken');
   const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};

@@ -92,7 +92,7 @@ const resolveProductRowsSource = (data: any) => {
   return candidates.find((arr) => Array.isArray(arr) && arr.length > 0) as any[] | undefined;
 };
 
-const SCHOOL_TYPES = ['Private', 'Public', 'Trust', 'New', 'Existing', 'Other'].map((t) => ({
+const SCHOOL_TYPES = ['New', 'Existing'].map((t) => ({
   label: t,
   value: t,
 }));
@@ -115,19 +115,34 @@ function parseYmd(value?: string) {
   return Number.isNaN(d.getTime()) ? new Date() : d;
 }
 
+function startOfToday() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
 function DateField({
   label,
   value,
   onChange,
   showPicker,
   setShowPicker,
+  minimumDate,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   showPicker: boolean;
   setShowPicker: (v: boolean) => void;
+  minimumDate?: Date;
 }) {
+  const minYmd = minimumDate ? toYmd(minimumDate) : undefined;
+  const pickerValue = (() => {
+    const parsed = parseYmd(value);
+    if (minimumDate && parsed < minimumDate) return minimumDate;
+    return parsed;
+  })();
+
   if (Platform.OS === 'web') {
     return (
       <View style={styles.fieldContainer}>
@@ -135,7 +150,12 @@ function DateField({
         {React.createElement('input', {
           type: 'date',
           value: value || '',
-          onChange: (e: any) => onChange(e.target.value || ''),
+          min: minYmd,
+          onChange: (e: any) => {
+            const next = e.target.value || '';
+            if (minYmd && next && next < minYmd) return;
+            onChange(next);
+          },
           style: {
             width: '100%',
             padding: 12,
@@ -160,9 +180,10 @@ function DateField({
       </TouchableOpacity>
       {showPicker && Platform.OS === 'android' ? (
         <DateTimePicker
-          value={parseYmd(value)}
+          value={pickerValue}
           mode="date"
           display="default"
+          minimumDate={minimumDate}
           onChange={(event, d) => {
             setShowPicker(false);
             if (event.type === 'set' && d) onChange(toYmd(d));
@@ -184,9 +205,10 @@ function DateField({
               </TouchableOpacity>
             </View>
             <DateTimePicker
-              value={parseYmd(value)}
+              value={pickerValue}
               mode="date"
               display="spinner"
+              minimumDate={minimumDate}
               onChange={(_, d) => {
                 if (d) onChange(toYmd(d));
               }}
@@ -212,6 +234,7 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
   const [form, setForm] = useState({
     school_type: '',
     school_name: '',
+    school_code: '',
     contact_person: '',
     contact_mobile: '',
     email: '',
@@ -223,6 +246,7 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
     zone: '',
     branches: '',
     strength: '',
+    average_fee: '',
     remarks: '',
     follow_up_date: '',
     assigned_to: '',
@@ -231,11 +255,15 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
   const [employees, setEmployees] = useState<{ _id: string; name: string }[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [schoolCodeError, setSchoolCodeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showFollowUpPicker, setShowFollowUpPicker] = useState(false);
 
-  const setField = (name: string, value: string) => setForm((f) => ({ ...f, [name]: value }));
+  const setField = (name: string, value: string) => {
+    setForm((f) => ({ ...f, [name]: value }));
+    if (name === 'school_code') setSchoolCodeError(null);
+  };
 
   useEffect(() => {
     (async () => {
@@ -256,7 +284,7 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
     (async () => {
       setLoadingEmployees(true);
       try {
-        const data = await apiService.get('/employees?isActive=true');
+        const data = await apiService.get('/employees?isActive=true&role=Executive');
         const list = Array.isArray(data) ? data : data?.data || [];
         setEmployees(
           list
@@ -282,6 +310,17 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
       setError('School name, contact person, and mobile are required');
       return;
     }
+    const code = form.school_code.trim();
+    if (!code) {
+      setSchoolCodeError('School Code is required');
+      setError('School Code is required');
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(code)) {
+      setSchoolCodeError('School code contains invalid characters.');
+      setError('School code contains invalid characters.');
+      return;
+    }
     if (!form.assigned_to) {
       setError('Please assign the deal to an executive. DC will not be created without assignment.');
       return;
@@ -301,11 +340,32 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
 
     setSubmitting(true);
     try {
+      try {
+        const schools = await apiService.get('/schools');
+        const list = Array.isArray(schools) ? schools : (schools as any)?.data || [];
+        const exists = list.some(
+          (s: any) =>
+            String(s.schoolCode || s.school_code || '')
+              .trim()
+              .toLowerCase() === code.toLowerCase(),
+        );
+        if (exists) {
+          const msg = 'School Code already exists. Please enter a unique School Code.';
+          setSchoolCodeError(msg);
+          setError(msg);
+          setSubmitting(false);
+          return;
+        }
+      } catch {
+        /* backend enforces uniqueness */
+      }
+
       const followUp = form.follow_up_date
         ? new Date(form.follow_up_date + 'T00:00:00Z').toISOString()
         : undefined;
       await apiService.post('/dc-orders/create', {
         school_name: form.school_name.trim(),
+        school_code: code,
         school_type: form.school_type || undefined,
         contact_person: form.contact_person.trim(),
         contact_mobile: form.contact_mobile.trim(),
@@ -317,6 +377,7 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
         status: form.lead_status || 'pending',
         branches: form.branches ? Number(form.branches) : undefined,
         strength: form.strength ? Number(form.strength) : undefined,
+        average_fee: form.average_fee ? Number(form.average_fee) : undefined,
         remarks: form.remarks,
         email: form.email,
         products: selectedProducts,
@@ -329,7 +390,9 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
         navigateRoot(isAdmin ? 'DCAdminMy' : 'DCEmp');
       }, 900);
     } catch (e: any) {
-      setError(e?.message || 'Failed to create deal');
+      const msg = e?.message || 'Failed to create deal';
+      setError(msg);
+      if (/school code already exists/i.test(msg)) setSchoolCodeError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -348,6 +411,13 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
         value={form.school_name}
         onChangeText={(v) => setField('school_name', v)}
       />
+      <WebInput
+        placeholder="School Code *"
+        value={form.school_code}
+        onChangeText={(v) => setField('school_code', v)}
+        autoCapitalize="characters"
+      />
+      {schoolCodeError ? <Text style={styles.errorText}>{schoolCodeError}</Text> : null}
       <WebSelect
         label="School Type"
         value={form.school_type}
@@ -460,6 +530,12 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
         onChangeText={(v) => setField('branches', v)}
         keyboardType="number-pad"
       />
+      <WebInput
+        placeholder="Average School Fee *"
+        value={form.average_fee}
+        onChangeText={(v) => setField('average_fee', v)}
+        keyboardType="number-pad"
+      />
       <WebSelect
         label="Assign to (Executive) *"
         value={form.assigned_to}
@@ -509,13 +585,23 @@ function CreateSaleForm({ navigation }: { navigation: any }) {
 
 export default function DCCreateScreen({ navigation, route }: any) {
   const dealId = route?.params?.dealId as string | undefined;
+  const mode = (route?.params?.mode as 'raise' | 'update' | undefined) || 'raise';
   if (!dealId) {
     return <CreateSaleForm navigation={navigation} />;
   }
-  return <RaiseDCForm navigation={navigation} dealId={dealId} />;
+  return <RaiseDCForm navigation={navigation} dealId={dealId} mode={mode} />;
 }
 
-function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }) {
+function RaiseDCForm({
+  navigation,
+  dealId,
+  mode = 'raise',
+}: {
+  navigation: any;
+  dealId: string;
+  mode?: 'raise' | 'update';
+}) {
+  const isUpdateMode = mode === 'update';
   const scrollRef = useRef<ScrollView>(null);
   const { user } = useAuth();
 
@@ -524,6 +610,8 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [existingDC, setExistingDC] = useState<any>(null);
   const [employees, setEmployees] = useState<{ _id: string; name: string }[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -535,7 +623,7 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
   const [contactMobile2, setContactMobile2] = useState('');
   const [dcDate, setDcDate] = useState('');
   const [showDcDatePicker, setShowDcDatePicker] = useState(false);
-  const [dcCategory, setDcCategory] = useState('Term 1');
+  const [dcCategory, setDcCategory] = useState('');
   const [dcRemarks, setDcRemarks] = useState('');
   const [dcNotes, setDcNotes] = useState('');
   const [productRows, setProductRows] = useState<ProductRow[]>([
@@ -557,6 +645,14 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
   const loadDeal = async (catalogProducts: any[]) => {
     try {
       setLoading(true);
+      if (!isUpdateMode) {
+        setContactPerson2('');
+        setContactMobile2('');
+        setDcDate('');
+        setDcCategory('');
+        setDcRemarks('');
+        setDcNotes('');
+      }
       let data: any;
       try {
         data = await apiService.get(`/dc-orders/${dealId}`);
@@ -568,25 +664,72 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
       setDeal(data);
       const pe = data?.pendingEdit || {};
       const dcReq = data?.dcRequestData || {};
-      setContactPerson2(
-        pe.contact_person2 || dcReq.contact_person2 || data?.contact_person2 || '',
-      );
-      setContactMobile2(
-        pe.contact_mobile2 || dcReq.contact_mobile2 || data?.contact_mobile2 || '',
-      );
-      if (dcReq.dcDate) {
-        setDcDate(String(dcReq.dcDate).split('T')[0]);
+      // Contact details are carried from the sale; all other new Raise DC
+      // details must be entered deliberately.
+      setContactPerson2(pe.contact_person2 || dcReq.contact_person2 || data?.contact_person2 || '');
+      setContactMobile2(pe.contact_mobile2 || dcReq.contact_mobile2 || data?.contact_mobile2 || '');
+      if (isUpdateMode) {
+        if (dcReq.dcDate) {
+          const loaded = String(dcReq.dcDate).split('T')[0];
+          const todayYmd = toYmd(startOfToday());
+          setDcDate(loaded >= todayYmd ? loaded : todayYmd);
+        }
+        if (dcReq.dcCategory) setDcCategory(dcReq.dcCategory);
+        if (dcReq.dcRemarks) setDcRemarks(dcReq.dcRemarks);
+        if (dcReq.dcNotes) setDcNotes(String(dcReq.dcNotes));
       }
-      if (dcReq.dcCategory) setDcCategory(dcReq.dcCategory);
-      if (dcReq.dcRemarks) setDcRemarks(dcReq.dcRemarks);
       if (data?.assigned_to) {
         const id = typeof data.assigned_to === 'object' ? data.assigned_to._id : data.assigned_to;
         if (id) setSelectedEmployeeId(id);
       }
 
+      // Prefer linked DC document when updating from Saved DC (same as web Update DC modal).
+      let linkedDC: any = null;
+      try {
+        const dcsRes = await apiService.get(`/dc?dcOrderId=${dealId}`);
+        const dcs = Array.isArray(dcsRes) ? dcsRes : dcsRes?.data || [];
+        if (dcs.length > 0) {
+          const active = dcs.filter((d: any) => d.status !== 'scheduled_for_later');
+          const pool = active.length > 0 ? active : dcs;
+          const preferred = pool.filter((d: any) =>
+            ['created', 'po_submitted', 'pending_dc'].includes(String(d.status || '')),
+          );
+          const ranked = (preferred.length > 0 ? preferred : pool).slice().sort((a: any, b: any) => {
+            return (
+              new Date(b.updatedAt || b.createdAt || 0).getTime() -
+              new Date(a.updatedAt || a.createdAt || 0).getTime()
+            );
+          });
+          linkedDC = ranked[0] || dcs[0];
+          setExistingDC(linkedDC);
+          try {
+            const fullDC = await apiService.get(`/dc/${linkedDC._id}`);
+            linkedDC = fullDC || linkedDC;
+            setExistingDC(linkedDC);
+            if (isUpdateMode) {
+              if (fullDC?.dcDate) {
+                const loaded = String(fullDC.dcDate).split('T')[0];
+                const todayYmd = toYmd(startOfToday());
+                setDcDate(loaded >= todayYmd ? loaded : todayYmd);
+              }
+              if (fullDC?.dcCategory) setDcCategory(fullDC.dcCategory);
+              if (fullDC?.dcRemarks) setDcRemarks(fullDC.dcRemarks || '');
+              if (fullDC?.dcNotes) setDcNotes(fullDC.dcNotes || '');
+            }
+          } catch {
+            /* keep list DC */
+          }
+        }
+      } catch {
+        setExistingDC(null);
+      }
+
       const categoryFallback =
         data.school_type === 'Existing' ? 'Old Students' : 'new Students';
-      const rowSource = resolveProductRowsSource(data);
+      const rowSource =
+        (Array.isArray(linkedDC?.productDetails) && linkedDC.productDetails.length > 0
+          ? linkedDC.productDetails
+          : null) || resolveProductRowsSource(data);
       if (rowSource?.length) {
         setProductRows(
           rowSource.map((p: any, idx: number) =>
@@ -643,14 +786,8 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
   const getProductSubjects = (productName: string): string[] =>
     getProductSubjectsOptions(products, productName);
 
-  const hasProductSubjects = (productName: string) => getProductSubjects(productName).length > 0;
-
   const getProductCategories = (productName: string): string[] =>
     getProductCategoryOptions(products, productName);
-
-  const hasProductCategories = (productName: string) => getProductCategories(productName).length > 0;
-
-  const hasProductLevels = (productName: string) => getProductLevels(productName).length > 0;
 
   const getProductNames = (): string[] => getCatalogProductNames(products);
 
@@ -661,6 +798,35 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
       { ...row, product: canonicalName },
       products,
     ) as ProductRow;
+  };
+
+  const updateProductRow = (id: string, field: keyof ProductRow, value: any) => {
+    setProductRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        if (field === 'product') {
+          return applyProductDefaults({ ...r, product: value, strength: r.strength }, value);
+        }
+        return { ...r, [field]: value };
+      }),
+    );
+  };
+
+  const removeProductRow = (id: string) => {
+    setProductRows((prev) => (prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)));
+  };
+
+  const addProductRow = () => {
+    const names = getProductNames();
+    const productName = names[0] || DEFAULT_ROW.product;
+    const base: ProductRow = {
+      ...DEFAULT_ROW,
+      id: String(Date.now()),
+      product: productName,
+      category:
+        deal?.school_type === 'Existing' ? 'Old Students' : DEFAULT_ROW.category,
+    };
+    setProductRows((prev) => [...prev, applyProductDefaults(base, productName)]);
   };
 
   const canApproveDC =
@@ -706,24 +872,17 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
 
   const assignedToName = getAssignedToName();
 
-  const raiseDcSubtitle =
-    deal?.status === 'dc_requested'
+  const raiseDcSubtitle = isUpdateMode
+    ? 'Update DC details and submit to Senior Coordinator'
+    : deal?.status === 'dc_requested'
       ? 'Review DC request from employee. You can accept it (to update later) or send to Senior Coordinator.'
       : deal?.status === 'dc_accepted'
         ? 'Update DC details. You can save changes or submit to Senior Coordinator.'
         : 'Fill in DC details and submit to Senior Coordinator.';
 
-  const updateProductRow = (id: string, field: keyof ProductRow, value: any) => {
-    setProductRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r;
-        if (field === 'product') {
-          return applyProductDefaults({ ...r, product: value }, value);
-        }
-        return { ...r, [field]: value };
-      }),
-    );
-  };
+  const screenTitle = isUpdateMode
+    ? 'Viswam Edutech - Update DC'
+    : `Raise DC${deal?.school_name ? ` - ${deal.school_name}` : ''}`;
 
   const buildProductDetails = () =>
     productRows.map((row) => ({
@@ -744,35 +903,45 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
     (typeof deal?.assigned_to === 'object' ? deal?.assigned_to?._id : deal?.assigned_to) ||
     '';
 
-  const removeProductRow = (id: string) => {
-    setProductRows((prev) => prev.filter((r) => r.id !== id));
-  };
-
-  const validate = (): boolean => {
+  const validate = (opts?: { forSave?: boolean }): boolean => {
     if (!selectedEmployeeId.trim() && !deal?.assigned_to) {
       setErrorMessage('Assigned To * is required');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return false;
     }
-    if (!contactPerson2.trim()) {
-      setErrorMessage('Contact Person 2 * is required');
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      return false;
+    if (!isUpdateMode) {
+      if (!contactPerson2.trim()) {
+        setErrorMessage('Contact Person 2 * is required');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
+      if (!contactMobile2.trim()) {
+        setErrorMessage('Contact Mobile 2 * is required');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
     }
-    if (!contactMobile2.trim()) {
-      setErrorMessage('Contact Mobile 2 * is required');
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      return false;
-    }
-    if (!dcDate.trim()) {
-      setErrorMessage('DC Date * is required');
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      return false;
-    }
-    if (!dcCategory.trim()) {
-      setErrorMessage('DC Category * is required');
-      scrollRef.current?.scrollTo({ y: 0, animated: true });
-      return false;
+    if (!opts?.forSave) {
+      if (!dcDate.trim()) {
+        setErrorMessage('DC Date * is required');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
+      if (dcDate.trim() < toYmd(startOfToday())) {
+        setErrorMessage('DC Date cannot be in the past');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
+      if (!dcCategory.trim()) {
+        setErrorMessage('DC Category * is required');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
+      if (!dcRemarks.trim()) {
+        setErrorMessage('DC Remarks * is required');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        return false;
+      }
     }
     if (productRows.length === 0) {
       setErrorMessage('Add at least one product row');
@@ -787,6 +956,83 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
     }
     setErrorMessage(null);
     return true;
+  };
+
+  const handleSaveDC = async () => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    if (!validate({ forSave: true })) return;
+
+    setSaving(true);
+    try {
+      const productDetails = buildProductDetails();
+      const requestedQuantity = productDetails.reduce((s, p) => s + (p.strength || 0), 0) || 1;
+      const assignedEmployeeId = getAssignedEmployeeId();
+      const raisePayload: any = {
+        dcOrderId: dealId,
+        dcDate: dcDate || undefined,
+        dcCategory: dcCategory || undefined,
+        dcRemarks: dcRemarks || undefined,
+        dcNotes: dcNotes || undefined,
+        employeeId: assignedEmployeeId || undefined,
+        productDetails,
+        requestedQuantity,
+        status: 'created',
+      };
+
+      if (existingDC?._id) {
+        await apiService.put(`/dc/${existingDC._id}`, raisePayload);
+      } else {
+        const created = await apiService.post('/dc/raise', raisePayload);
+        setExistingDC(created);
+      }
+
+      if (!isLead) {
+        await apiService.put(`/dc-orders/${dealId}`, {
+          status: 'dc_approved',
+          workflowStage: 'ClosedSales',
+          dcRequestData: {
+            dcDate,
+            dcRemarks,
+            dcCategory,
+            dcNotes,
+            requestedQuantity,
+            productDetails,
+            employeeId: assignedEmployeeId,
+          },
+        });
+      }
+
+      setSuccessMessage(
+        existingDC
+          ? 'DC updated and saved. It will stay in Saved DC.'
+          : 'DC saved. It will stay in Saved DC.',
+      );
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      setTimeout(() => {
+        if (!navigateRoot('DCSaved')) navigation.navigate('DCSaved');
+      }, 700);
+    } catch (e: any) {
+      setErrorMessage(e?.message || 'Failed to save DC');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePrint = () => {
+    Alert.alert(
+      'Print',
+      [
+        deal?.school_name || 'School',
+        `Code: ${deal?.dc_code || deal?.school_code || '-'}`,
+        `Executive: ${assignedToName || '-'}`,
+        `Products: ${productRows.map((r) => `${r.product} - ${r.strength}`).join(', ') || '-'}`,
+        `DC Date: ${dcDate || '-'}`,
+        `Category: ${dcCategory || '-'}`,
+        `Remarks: ${dcRemarks || '-'}`,
+      ].join('\n'),
+    );
   };
 
   const handleAcceptDC = async () => {
@@ -820,8 +1066,10 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
       });
 
       if (!isLead) {
+        // Saved DC page loads GET /dc-orders?status=dc_approved (not My Clients `saved`).
         await apiService.put(`/dc-orders/${dealId}`, {
-          status: 'dc_accepted',
+          status: 'dc_approved',
+          workflowStage: 'ClosedSales',
           contact_person2: contactPerson2.trim(),
           contact_mobile2: contactMobile2.trim(),
           dcRequestData: {
@@ -837,9 +1085,15 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
         });
       }
 
-      setDeal((prev: any) => (prev ? { ...prev, status: 'dc_accepted' } : prev));
-      setSuccessMessage('DC request accepted! You can update it later or submit to Senior Coordinator.');
+      setDeal((prev: any) => (prev ? { ...prev, status: 'dc_approved' } : prev));
+      setSuccessMessage('DC request accepted! Opening Saved DC…');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
+      setTimeout(() => {
+        // Closed Sales → Raise DC Accept lands on Saved DC List (dc_approved).
+        if (!navigateRoot('DCSaved')) {
+          navigation.navigate('DCSaved');
+        }
+      }, 600);
     } catch (e: any) {
       setErrorMessage(e?.message || 'Failed to accept DC');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
@@ -892,7 +1146,11 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
       setSuccessMessage(hasBothTerms ? 'DC split: Term 1 → Pending DC, Term 2 → Term-Wise DC.' : 'DC raised and sent to Senior Coordinator.');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       setTimeout(() => {
-        navigation.goBack();
+        if (isUpdateMode) {
+          if (!navigateRoot('DCSaved')) navigation.navigate('DCSaved');
+        } else {
+          navigation.goBack();
+        }
       }, 1500);
     } catch (e: any) {
       setErrorMessage(e?.message || 'Failed to raise DC');
@@ -919,7 +1177,7 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
   if (!deal && !loading) {
     return (
     <ScreenShell
-      title="Raise DC"
+      title={isUpdateMode ? 'Viswam Edutech - Update DC' : 'Raise DC'}
       loading={loading}
     >
 <View style={styles.errorBlock}>
@@ -931,7 +1189,7 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
 
   return (
     <ScreenShell
-      title={`Raise DC${deal?.school_name ? ` - ${deal.school_name}` : ''}`}
+      title={screenTitle}
       subtitle={raiseDcSubtitle}
       noScroll
     >
@@ -946,7 +1204,6 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
         {/* Lead Information */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Lead Information</Text>
-          <Text style={styles.sectionSubtitle}>Client and contact details</Text>
           <FormField label="School Type" value={deal?.school_type || '-'} editable={false} />
           <FormField label="School Name" value={deal?.school_name || '-'} editable={false} />
           <FormField
@@ -980,7 +1237,6 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
         {/* More Information */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>More Information</Text>
-          <Text style={styles.sectionSubtitle}>Additional location and details</Text>
           <FormField label="Town" value={getTown() || '-'} editable={false} />
           <FormField
             label="Address"
@@ -993,63 +1249,34 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
           <FormField label="Remarks" value={deal?.remarks || '-'} editable={false} multiline />
         </View>
 
-        {/* Delivery and Address */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Delivery and Address</Text>
-          <Text style={styles.sectionSubtitle}>Transport details for this order</Text>
-          <FormField label="Transport Name" value={transportName || '-'} editable={false} />
-          <FormField label="Transport Location" value={transportLocation || '-'} editable={false} />
-          <FormField
-            label="Transportation Landmark"
-            value={transportationLandmark || '-'}
-            editable={false}
-          />
-          <FormField label="Pincode" value={transportPincode || '-'} editable={false} />
-        </View>
-
-        {/* DC Details */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>DC Details</Text>
-          <Text style={styles.sectionSubtitle}>Enter delivery challan information</Text>
-          <FormField
-            label="Contact Person 2 *"
-            value={contactPerson2}
-            onChangeText={setContactPerson2}
-            placeholder="Enter contact person 2"
-          />
-          <FormField
-            label="Contact Mobile 2 *"
-            value={contactMobile2}
-            onChangeText={setContactMobile2}
-            placeholder="Enter contact mobile 2"
-          />
-          <DateField
-            label="DC Date *"
-            value={dcDate}
-            onChange={setDcDate}
-            showPicker={showDcDatePicker}
-            setShowPicker={setShowDcDatePicker}
-          />
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>DC Category *</Text>
-            <View style={styles.pickerWrap}>
-              <Picker selectedValue={dcCategory} onValueChange={setDcCategory} style={styles.picker}>
-                <Picker.Item label="Select DC Category *" value="" />
-                {DC_CATEGORIES.map((c) => (
-                  <Picker.Item key={c} label={c} value={c} />
-                ))}
-              </Picker>
-            </View>
+        {!isUpdateMode ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Delivery and Address</Text>
+            <Text style={styles.sectionSubtitle}>Transport details for this order</Text>
+            <FormField label="Transport Name" value={transportName || '-'} editable={false} />
+            <FormField label="Transport Location" value={transportLocation || '-'} editable={false} />
+            <FormField
+              label="Transportation Landmark"
+              value={transportationLandmark || '-'}
+              editable={false}
+            />
+            <FormField label="Pincode" value={transportPincode || '-'} editable={false} />
           </View>
-          <FormField label="DC Remarks" value={dcRemarks} onChangeText={setDcRemarks} placeholder="Enter remarks" />
-        </View>
+        ) : null}
 
-        {/* Products & Quantities */}
+        {/* Products & Quantities — editable table (Raise DC & Update DC) */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Products & Quantities</Text>
-          <Text style={styles.sectionSubtitle}>Product details and quantities</Text>
+          <View style={styles.sectionTitleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sectionTitle}>Products & Quantities</Text>
+              <Text style={styles.sectionSubtitle}>Product details and quantities</Text>
+            </View>
+            <TouchableOpacity style={styles.addProductBtn} onPress={addProductRow}>
+              <Text style={styles.addProductBtnText}>+ Add</Text>
+            </TouchableOpacity>
+          </View>
           <ScrollView horizontal showsHorizontalScrollIndicator style={styles.tableScroll}>
-            <View style={styles.tableWrap}>
+            <View style={[styles.tableWrap, styles.tableWrapEditable]}>
               <View style={styles.tableHeader}>
                 <Text style={[styles.th, styles.colProduct]}>Product</Text>
                 <Text style={[styles.th, styles.colClass]}>Class</Text>
@@ -1062,49 +1289,161 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
                 <Text style={[styles.th, styles.colTerm]}>Term</Text>
                 <Text style={[styles.th, styles.colAction]}>Action</Text>
               </View>
-              {productRows.map((row) => (
-                <View key={row.id} style={styles.tableRow}>
-                  <Text style={[styles.tdText, styles.colProduct]} numberOfLines={1}>
-                    {row.product?.trim() || '-'}
-                  </Text>
-                  <WebInput
-                    style={[styles.tableInput, styles.colClass]}
-                    value={row.class}
-                    onChangeText={(v) => updateProductRow(row.id, 'class', v)}
-                    placeholder="Class"
-                  />
-                  <Text style={[styles.tdText, styles.colCategory]} numberOfLines={1}>
-                    {row.category?.trim() || '-'}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colProductCategory]} numberOfLines={1}>
-                    {row.productCategory?.trim() || '-'}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colSpecs]} numberOfLines={1}>
-                    {row.specs?.trim() || '-'}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colSubject]} numberOfLines={1}>
-                    {row.subject?.trim() || '-'}
-                  </Text>
-                  <WebInput
-                    style={[styles.tableInput, styles.colQty]}
-                    value={String(row.strength || '')}
-                    onChangeText={(v) => updateProductRow(row.id, 'strength', Number(v) || 0)}
-                    keyboardType="numeric"
-                    placeholder="0"
-                  />
-                  <Text style={[styles.tdText, styles.colLevel]} numberOfLines={1}>
-                    {row.level?.trim() || '-'}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colTerm]} numberOfLines={1}>
-                    {row.term?.trim() || 'Term 1'}
-                  </Text>
-                  <TouchableOpacity style={[styles.td, styles.colAction]} onPress={() => removeProductRow(row.id)}>
-                    <Text style={styles.removeBtn}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
+              {productRows.map((row) => {
+                const productOpts = getProductNames();
+                const levelOpts = getProductLevels(row.product);
+                const specOpts = getProductSpecs(row.product);
+                const subjectOpts = getProductSubjects(row.product);
+                const skuOpts = getProductCategories(row.product);
+                const productList = (
+                  productOpts.includes(row.product) ? productOpts : [row.product, ...productOpts]
+                ).filter(Boolean);
+
+                return (
+                  <View key={row.id} style={styles.tableRow}>
+                    <View style={[styles.cell, styles.colProduct]}>
+                      <Picker
+                        selectedValue={row.product}
+                        onValueChange={(v) => updateProductRow(row.id, 'product', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {productList.map((p) => (
+                          <Picker.Item key={p} label={p} value={p} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colClass]}>
+                      <Picker
+                        selectedValue={row.class}
+                        onValueChange={(v) => updateProductRow(row.id, 'class', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {CLASSES.map((c) => (
+                          <Picker.Item key={c} label={c} value={c} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colCategory]}>
+                      <Picker
+                        selectedValue={row.category}
+                        onValueChange={(v) => updateProductRow(row.id, 'category', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {CATEGORY_OPTIONS.map((c) => (
+                          <Picker.Item key={c} label={c} value={c} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colProductCategory]}>
+                      {skuOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.productCategory || skuOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'productCategory', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {skuOpts.map((c) => (
+                            <Picker.Item key={c} label={c} value={c} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.productCategory?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colSpecs]}>
+                      {specOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.specs || specOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'specs', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {specOpts.map((s) => (
+                            <Picker.Item key={s} label={s} value={s} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.specs?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colSubject]}>
+                      {subjectOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.subject || subjectOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'subject', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {subjectOpts.map((s) => (
+                            <Picker.Item key={s} label={s} value={s} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.subject?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colQty]}>
+                      <WebInput
+                        style={styles.cellInput}
+                        value={row.strength ? String(row.strength) : ''}
+                        onChangeText={(v) => updateProductRow(row.id, 'strength', Number(v) || 0)}
+                        keyboardType="numeric"
+                        placeholder="0"
+                      />
+                    </View>
+                    <View style={[styles.cell, styles.colLevel]}>
+                      {levelOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.level || levelOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'level', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {levelOpts.map((l) => (
+                            <Picker.Item key={l} label={l} value={l} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <WebInput
+                          style={styles.cellInput}
+                          value={row.level || ''}
+                          onChangeText={(v) => updateProductRow(row.id, 'level', v)}
+                          placeholder="Level"
+                        />
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colTerm]}>
+                      <Picker
+                        selectedValue={row.term || 'Term 1'}
+                        onValueChange={(v) => updateProductRow(row.id, 'term', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {TERMS.map((t) => (
+                          <Picker.Item key={t} label={t} value={t} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.cell, styles.colAction]}
+                      onPress={() => removeProductRow(row.id)}
+                    >
+                      <Text style={styles.removeBtn}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
               <View style={styles.tableFooter}>
-                <View style={styles.footerLeadingSpacer} />
+                <View style={[styles.footerLeadingSpacer, styles.footerLeadingSpacerEditable]} />
                 <Text style={styles.footerLabel}>Grand Total:</Text>
                 <Text style={styles.footerValue}>{grandTotalQty}</Text>
                 <View style={styles.footerTrailingSpacer} />
@@ -1113,36 +1452,123 @@ function RaiseDCForm({ navigation, dealId }: { navigation: any; dealId: string }
           </ScrollView>
         </View>
 
+        {/* DC Details */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DC Details</Text>
+          {!isUpdateMode ? (
+            <>
+              <FormField
+                label="Contact Person 2 *"
+                value={contactPerson2}
+                onChangeText={setContactPerson2}
+                placeholder="Enter contact person 2"
+              />
+              <FormField
+                label="Contact Mobile 2 *"
+                value={contactMobile2}
+                onChangeText={setContactMobile2}
+                placeholder="Enter contact mobile 2"
+              />
+            </>
+          ) : null}
+          <DateField
+            label="DC Date *"
+            value={dcDate}
+            onChange={setDcDate}
+            showPicker={showDcDatePicker}
+            setShowPicker={setShowDcDatePicker}
+            minimumDate={startOfToday()}
+          />
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>DC Category *</Text>
+            <View style={styles.pickerWrap}>
+              <Picker selectedValue={dcCategory} onValueChange={setDcCategory} style={styles.picker}>
+                <Picker.Item label="Select DC Category *" value="" />
+                {(isUpdateMode ? ['Term 1', 'Term 2', 'Both'] : DC_CATEGORIES).map((c) => (
+                  <Picker.Item key={c} label={c} value={c} />
+                ))}
+              </Picker>
+            </View>
+          </View>
+          <FormField
+            label="DC Remarks *"
+            value={dcRemarks}
+            onChangeText={setDcRemarks}
+            placeholder="Remarks"
+          />
+          {isUpdateMode ? (
+            <FormField
+              label="DC Notes"
+              value={dcNotes}
+              onChangeText={setDcNotes}
+              placeholder="Notes (optional)"
+              multiline
+            />
+          ) : null}
+        </View>
+
         {/* Buttons */}
-        <View style={styles.buttonRow}>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={() => navigation.goBack()}
-            disabled={submitting || accepting}
-          >
-            <Text style={styles.cancelButtonText}>Cancel</Text>
-          </TouchableOpacity>
-          {canApproveDC ? (
+        {isUpdateMode ? (
+          <View style={styles.updateActions}>
             <TouchableOpacity
-              style={[styles.acceptButton, (accepting || submitting) && styles.submitButtonDisabled]}
-              onPress={handleAcceptDC}
-              disabled={accepting || submitting}
+              style={styles.updateSecondaryBtn}
+              onPress={handlePrint}
+              disabled={submitting || saving}
             >
-              <Text style={styles.acceptButtonText}>
-                {accepting ? 'Processing…' : deal?.status === 'dc_accepted' ? 'Update DC' : 'Accept'}
+              <Text style={styles.updateSecondaryBtnText}>Print</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.updateSecondaryBtn}
+              onPress={handleSaveDC}
+              disabled={submitting || saving}
+            >
+              <Text style={styles.updateSecondaryBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.updateSubmitBtn, (submitting || saving) && styles.submitButtonDisabled]}
+              onPress={handleSubmitToSeniorCoordinator}
+              disabled={submitting || saving}
+            >
+              <Text style={styles.updateSubmitBtnText} numberOfLines={1}>
+                {submitting ? 'Submitting…' : 'Submit to Senior Coordinator'}
               </Text>
             </TouchableOpacity>
-          ) : null}
-          <TouchableOpacity
-            style={[styles.submitButton, (submitting || accepting) && styles.submitButtonDisabled]}
-            onPress={handleSubmitToSeniorCoordinator}
-            disabled={submitting || accepting}
-          >
-            <Text style={styles.submitButtonText} numberOfLines={2}>
-              {submitting ? 'Submitting…' : 'Submit to Senior Coordinator'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+          </View>
+        ) : (
+          <View style={styles.buttonRow}>
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => navigation.goBack()}
+              disabled={submitting || accepting}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            {canApproveDC ? (
+              <TouchableOpacity
+                style={[styles.acceptButton, (accepting || submitting) && styles.submitButtonDisabled]}
+                onPress={handleAcceptDC}
+                disabled={accepting || submitting}
+              >
+                <Text style={styles.acceptButtonText}>
+                  {accepting
+                    ? 'Processing…'
+                    : deal?.status === 'dc_approved' || deal?.status === 'dc_accepted'
+                      ? 'Update DC'
+                      : 'Accept'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.submitButton, (submitting || accepting) && styles.submitButtonDisabled]}
+              onPress={handleSubmitToSeniorCoordinator}
+              disabled={submitting || accepting}
+            >
+              <Text style={styles.submitButtonText} numberOfLines={2}>
+                {submitting ? 'Submitting…' : 'Submit to Senior Coordinator'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
     </ScreenShell>
   );
@@ -1195,7 +1621,7 @@ const styles = StyleSheet.create({
   mandatoryNote: { ...typography.body.small, color: colors.textSecondary, marginBottom: 16 },
   section: { marginBottom: 24 },
   sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 4 },
-  sectionSubtitle: { ...typography.body.small, color: colors.textSecondary, marginBottom: 12 },
+  sectionSubtitle: { ...typography.body.small, color: colors.textSecondary, marginBottom: 0 },
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   fieldContainer: { marginBottom: 14 },
   label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 },
@@ -1214,7 +1640,8 @@ const styles = StyleSheet.create({
   datePickerTitle: { ...typography.heading.h3, color: colors.textPrimary },
   doneText: { ...typography.label.medium, color: colors.primary, fontWeight: '600' },
   tableScroll: { marginHorizontal: -20 },
-  tableWrap: { minWidth: 980, paddingRight: 20 },
+  tableWrap: { minWidth: 980, paddingRight: 16 },
+  tableWrapEditable: { minWidth: 1080 },
   tableHeader: {
     flexDirection: 'row',
     backgroundColor: '#F8FAFC',
@@ -1230,60 +1657,148 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.3,
+    paddingHorizontal: 4,
   },
   tableRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 8,
     alignItems: 'center',
     minHeight: 48,
     backgroundColor: '#fff',
   },
-  td: { ...typography.body.small, color: colors.textPrimary, justifyContent: 'center', paddingHorizontal: 4 },
+  td: {
+    ...typography.body.small,
+    color: colors.textPrimary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
   tdText: {
     ...typography.body.small,
     color: '#0F172A',
     paddingHorizontal: 4,
   },
-  tableInput: {
+  tdAlignCenter: { textAlign: 'center' },
+  cell: {
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+  },
+  cellPicker: {
+    width: '100%',
+    height: 40,
+    color: colors.textPrimary,
+  },
+  cellPlain: {
+    ...typography.body.small,
+    color: '#0F172A',
+    paddingHorizontal: 4,
+  },
+  cellInput: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#CBD5E1',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
     fontSize: 13,
     minHeight: 36,
+    marginBottom: 0,
     color: colors.textPrimary,
     textAlign: 'center',
   },
-  colProduct: { width: 90 },
-  colClass: { width: 56 },
-  colCategory: { width: 110 },
-  colProductCategory: { width: 120 },
-  colSpecs: { width: 90 },
-  colSubject: { width: 80 },
-  colQty: { width: 72 },
-  colLevel: { width: 80 },
-  colTerm: { width: 72 },
-  colAction: { width: 48, alignItems: 'center' },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
+  },
+  addProductBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  addProductBtnText: {
+    ...typography.label.medium,
+    color: colors.textLight,
+    fontWeight: '600',
+  },
+  colProduct: { width: 120 },
+  colClass: { width: 72 },
+  colCategory: { width: 130 },
+  colProductCategory: { width: 130 },
+  colSpecs: { width: 100 },
+  colSubject: { width: 100 },
+  colQty: { width: 80 },
+  colLevel: { width: 100 },
+  colTerm: { width: 100 },
+  colAction: { width: 52, alignItems: 'center' },
   removeBtn: { fontSize: 18, color: '#DC2626', fontWeight: 'bold' },
   tableFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 8,
     backgroundColor: '#E2E8F0',
     borderTopWidth: 2,
     borderTopColor: '#94A3B8',
   },
-  footerLeadingSpacer: { width: 546 },
-  footerLabel: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 110, textAlign: 'right', paddingRight: 8 },
-  footerValue: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 72, textAlign: 'center' },
+  footerLeadingSpacer: { width: 652 },
+  footerLeadingSpacerEditable: { width: 652 },
+  footerLabel: {
+    ...typography.body.medium,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    width: 100,
+    textAlign: 'right',
+    paddingRight: 8,
+  },
+  footerValue: {
+    ...typography.body.medium,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    width: 80,
+    textAlign: 'center',
+  },
   footerTrailingSpacer: { flex: 1 },
   buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 24 },
+  updateActions: {
+    marginTop: 24,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  updateSecondaryBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundLight,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  updateSecondaryBtnText: {
+    ...typography.label.medium,
+    color: colors.textPrimary,
+  },
+  updateSubmitBtn: {
+    borderRadius: 8,
+    backgroundColor: '#334155',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignSelf: 'flex-start',
+  },
+  updateSubmitBtnText: {
+    color: colors.textLight,
+    fontWeight: '600',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  updateActionsLeft: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   cancelButton: {
     flexGrow: 1,
     flexBasis: 120,

@@ -14,7 +14,7 @@ import ScreenShell from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect } from '../../ui/WebPrimitives';
 import MessageBanner from '../../components/MessageBanner';
 
-const SCHOOL_TYPES = ['Private', 'Public', 'Trust', 'New', 'Existing', 'Other'].map((t) => ({
+const SCHOOL_TYPES = ['New', 'Existing'].map((t) => ({
   label: t,
   value: t,
 }));
@@ -23,6 +23,7 @@ const DEAL_STATUS_OPTIONS = [
   { label: 'Pending', value: 'pending' },
   { label: 'Completed', value: 'completed' },
 ];
+const SCHOOL_CODE_ALLOWED = /^[A-Za-z0-9_-]+$/;
 
 type SaleProduct = {
   name: string;
@@ -32,11 +33,145 @@ type SaleProduct = {
   strength: number;
 };
 
+function toYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmd(value?: string) {
+  if (!value) return new Date();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-').map(Number);
+    return new Date(y, (m || 1) - 1, d || 1);
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function startOfToday() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+  showPicker,
+  setShowPicker,
+  minimumDate,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  showPicker: boolean;
+  setShowPicker: (v: boolean) => void;
+  minimumDate?: Date;
+}) {
+  const minYmd = minimumDate ? toYmd(minimumDate) : undefined;
+  const pickerValue = (() => {
+    const parsed = parseYmd(value);
+    if (minimumDate && parsed < minimumDate) return minimumDate;
+    return parsed;
+  })();
+
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.fieldContainer}>
+        <Text style={styles.label}>{label}</Text>
+        {React.createElement('input', {
+          type: 'date',
+          value: value || '',
+          min: minYmd,
+          onChange: (e: any) => {
+            const next = e.target.value || '';
+            if (minYmd && next && next < minYmd) return;
+            onChange(next);
+          },
+          style: {
+            width: '100%',
+            padding: 12,
+            borderRadius: 12,
+            border: '1px solid #E2E8F0',
+            fontSize: 16,
+            backgroundColor: '#fff',
+            color: '#1E293B',
+            boxSizing: 'border-box',
+          },
+        })}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.fieldContainer}>
+      <Text style={styles.label}>{label}</Text>
+      <TouchableOpacity style={styles.dateTouchable} onPress={() => setShowPicker(true)} activeOpacity={0.7}>
+        <Text style={[styles.dateText, !value && styles.placeholderText]}>
+          {value || 'Tap to pick date'}
+        </Text>
+        <Text>📅</Text>
+      </TouchableOpacity>
+      {showPicker && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={pickerValue}
+          mode="date"
+          display="default"
+          minimumDate={minimumDate}
+          onChange={(event, d) => {
+            setShowPicker(false);
+            if (event.type === 'set' && d) onChange(toYmd(d));
+          }}
+        />
+      ) : null}
+      {showPicker && Platform.OS === 'ios' ? (
+        <Modal visible transparent animationType="slide">
+          <TouchableOpacity
+            style={styles.datePickerOverlay}
+            activeOpacity={1}
+            onPress={() => setShowPicker(false)}
+          />
+          <View style={styles.datePickerBox}>
+            <View style={styles.datePickerHeader}>
+              <Text style={styles.datePickerTitle}>{label}</Text>
+              <TouchableOpacity onPress={() => setShowPicker(false)}>
+                <Text style={styles.doneText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <DateTimePicker
+              value={pickerValue}
+              mode="date"
+              display="spinner"
+              minimumDate={minimumDate}
+              onChange={(_, d) => {
+                if (d) onChange(toYmd(d));
+              }}
+            />
+          </View>
+        </Modal>
+      ) : null}
+    </View>
+  );
+}
+
+function validateSchoolCode(raw: string): { ok: true; value: string } | { ok: false; message: string } {
+  const value = String(raw || '').trim();
+  if (!value) return { ok: false, message: 'School Code is required' };
+  if (!SCHOOL_CODE_ALLOWED.test(value)) {
+    return { ok: false, message: 'School code contains invalid characters.' };
+  }
+  return { ok: true, value };
+}
+
 export default function DCCreateSaleScreen({ navigation }: any) {
   const { user } = useAuth();
   const [form, setForm] = useState({
     school_type: '',
     school_name: '',
+    school_code: '',
     contact_person: '',
     contact_mobile: '',
     email: '',
@@ -44,23 +179,124 @@ export default function DCCreateSaleScreen({ navigation }: any) {
     contact_mobile2: '',
     location: '',
     address: '',
+    pincode: '',
+    state: '',
+    city: '',
+    region: '',
+    area: '',
     lead_status: 'pending',
     zone: '',
     branches: '',
     strength: '',
+    average_fee: '',
     remarks: '',
     follow_up_date: '',
     assigned_to: '',
   });
   const [products, setProducts] = useState<SaleProduct[]>([]);
   const [employees, setEmployees] = useState<{ _id: string; name: string }[]>([]);
+  const [areas, setAreas] = useState<{ name: string; district?: string; block?: string; branchType?: string }[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(true);
+  const [loadingPincode, setLoadingPincode] = useState(false);
+  const [pincodeError, setPincodeError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checkingSchoolCode, setCheckingSchoolCode] = useState(false);
+  const [schoolCodeError, setSchoolCodeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showFollowUpPicker, setShowFollowUpPicker] = useState(false);
 
-  const setField = (name: string, value: string) => setForm((f) => ({ ...f, [name]: value }));
+  const setField = (name: string, value: string) => {
+    setForm((f) => ({ ...f, [name]: value }));
+    if (name === 'school_code' && schoolCodeError) setSchoolCodeError(null);
+  };
+
+  const handlePincodeChange = async (pincode: string) => {
+    const cleanPincode = pincode.replace(/\D/g, '').slice(0, 6);
+    setForm((f) => ({
+      ...f,
+      pincode: cleanPincode,
+      area: cleanPincode.length < 6 ? '' : f.area,
+    }));
+    setPincodeError(null);
+
+    if (cleanPincode.length === 6) {
+      setLoadingPincode(true);
+      try {
+        const response = await apiService.get<any>(`/location/get-town?pincode=${cleanPincode}`);
+        if (response?.success && response.town) {
+          setForm((f) => ({
+            ...f,
+            city: response.district || '',
+            state: response.state || '',
+            region: response.region || response.town || '',
+            location: f.location || response.town || '',
+            area: '',
+          }));
+          if (Array.isArray(response.postOffices) && response.postOffices.length > 0) {
+            setAreas(
+              response.postOffices
+                .map((po: any) => ({
+                  name: String(po.Name || po.name || '').trim(),
+                  district: po.District || po.district || '',
+                  block: po.Block || po.block,
+                  branchType: po.BranchType || po.branchType,
+                }))
+                .filter((a: { name: string }) => a.name),
+            );
+          } else {
+            setAreas([{ name: response.town, district: response.district || '' }]);
+          }
+        } else {
+          setAreas([]);
+          setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
+          setPincodeError(response?.message || 'Could not find this pincode. Enter location manually.');
+        }
+      } catch (err: any) {
+        setAreas([]);
+        setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
+        setPincodeError(err?.message || 'Pincode lookup failed. Enter location manually.');
+      } finally {
+        setLoadingPincode(false);
+      }
+    } else {
+      setAreas([]);
+      setForm((f) => ({ ...f, city: '', state: '', region: '', area: '' }));
+    }
+  };
+
+  const checkSchoolCodeUnique = async (rawCode: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const format = validateSchoolCode(rawCode);
+    if (!format.ok) {
+      setSchoolCodeError(format.message);
+      return { ok: false, message: format.message };
+    }
+    const code = format.value;
+    setCheckingSchoolCode(true);
+    try {
+      const schools = await apiService.get('/schools');
+      const list = Array.isArray(schools) ? schools : (schools as any)?.data || [];
+      const exists = list.some(
+        (s: any) =>
+          String(s.schoolCode || s.school_code || '')
+            .trim()
+            .toLowerCase() === code.toLowerCase(),
+      );
+      if (exists) {
+        const message = 'School Code already exists. Please enter a unique School Code.';
+        setSchoolCodeError(message);
+        return { ok: false, message };
+      }
+      setSchoolCodeError(null);
+      return { ok: true };
+    } catch {
+      // Backend create still enforces uniqueness
+      setSchoolCodeError(null);
+      return { ok: true };
+    } finally {
+      setCheckingSchoolCode(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -81,7 +317,7 @@ export default function DCCreateSaleScreen({ navigation }: any) {
     (async () => {
       setLoadingEmployees(true);
       try {
-        const data = await apiService.get('/employees?isActive=true');
+        const data = await apiService.get('/employees?isActive=true&role=Executive');
         const list = Array.isArray(data) ? data : data?.data || [];
         setEmployees(
           list
@@ -107,8 +343,71 @@ export default function DCCreateSaleScreen({ navigation }: any) {
       setError('School name, contact person, and mobile are required');
       return;
     }
+    const schoolCodeCheck = validateSchoolCode(form.school_code);
+    if (!schoolCodeCheck.ok) {
+      setSchoolCodeError(schoolCodeCheck.message);
+      setError(schoolCodeCheck.message);
+      return;
+    }
+    const email = form.email.trim();
+    if (!email) {
+      setError('Email is required');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('Please enter a valid email address');
+      return;
+    }
+    if (!form.contact_person2.trim()) {
+      setError('Contact Person 2 is required');
+      return;
+    }
+    const mobile2 = form.contact_mobile2.replace(/\D/g, '');
+    if (mobile2.length !== 10) {
+      setError('Contact Mobile 2 must be a valid 10-digit number');
+      return;
+    }
+    const pincode = form.pincode.replace(/\D/g, '').slice(0, 6);
+    if (pincode.length !== 6) {
+      setPincodeError('Valid 6-digit pincode is required');
+      setError('Valid 6-digit pincode is required');
+      return;
+    }
+    if (!form.address.trim()) {
+      setError('Address is required');
+      return;
+    }
+    const uniqueCheck = await checkSchoolCodeUnique(schoolCodeCheck.value);
+    if (!uniqueCheck.ok) {
+      setError(uniqueCheck.message);
+      return;
+    }
     if (!form.assigned_to) {
       setError('Please assign the deal to an executive. DC will not be created without assignment.');
+      return;
+    }
+    if (form.follow_up_date) {
+      const selected = parseYmd(form.follow_up_date);
+      selected.setHours(0, 0, 0, 0);
+      if (selected < startOfToday()) {
+        setError('Follow-up date cannot be in the past');
+        return;
+      }
+    }
+    if (!String(form.branches).trim() || Number(form.branches) <= 0) {
+      setError('No. of Branches is required');
+      return;
+    }
+    if (!String(form.average_fee).trim() || Number(form.average_fee) <= 0) {
+      setError('Average School Fee is required');
+      return;
+    }
+    if (!String(form.strength).trim() || Number(form.strength) <= 0) {
+      setError('School strength (students) is required');
+      return;
+    }
+    if (!form.remarks.trim()) {
+      setError('Remarks is required');
       return;
     }
     const selectedProducts = products
@@ -131,19 +430,26 @@ export default function DCCreateSaleScreen({ navigation }: any) {
         : undefined;
       await apiService.post('/dc-orders/create', {
         school_name: form.school_name.trim(),
+        school_code: schoolCodeCheck.value,
         school_type: form.school_type || undefined,
         contact_person: form.contact_person.trim(),
         contact_mobile: form.contact_mobile.trim(),
-        contact_person2: form.contact_person2 || undefined,
-        contact_mobile2: form.contact_mobile2 || undefined,
+        contact_person2: form.contact_person2.trim(),
+        contact_mobile2: mobile2,
         location: form.location,
-        address: form.address || undefined,
+        address: form.address.trim(),
+        pincode,
+        state: form.state || undefined,
+        city: form.city || undefined,
+        region: form.region || undefined,
+        area: form.area || undefined,
         zone: form.zone,
         status: form.lead_status || 'pending',
-        branches: form.branches ? Number(form.branches) : undefined,
-        strength: form.strength ? Number(form.strength) : undefined,
-        remarks: form.remarks,
-        email: form.email,
+        branches: Number(form.branches),
+        strength: Number(form.strength),
+        average_fee: Number(form.average_fee),
+        remarks: form.remarks.trim(),
+        email,
         products: selectedProducts,
         estimated_delivery_date: followUp,
         assigned_to: form.assigned_to,
@@ -154,7 +460,11 @@ export default function DCCreateSaleScreen({ navigation }: any) {
         navigateRoot(isAdmin ? 'DCAdminMy' : 'DCEmp');
       }, 900);
     } catch (e: any) {
-      setError(e?.message || 'Failed to create deal');
+      const msg = e?.message || 'Failed to create deal';
+      setError(msg);
+      if (/school code already exists/i.test(msg)) {
+        setSchoolCodeError(msg);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -174,6 +484,24 @@ export default function DCCreateSaleScreen({ navigation }: any) {
         value={form.school_name}
         onChangeText={(v) => setField('school_name', v)}
       />
+      <Text style={styles.label}>School Code *</Text>
+      <WebInput
+        placeholder="Enter unique school code"
+        value={form.school_code}
+        onChangeText={(v) => setField('school_code', v)}
+        onBlur={() => {
+          if (form.school_code.trim()) {
+            void checkSchoolCodeUnique(form.school_code);
+          }
+        }}
+        autoCapitalize="characters"
+        style={schoolCodeError ? styles.inputError : undefined}
+      />
+      {checkingSchoolCode ? (
+        <Text style={styles.checkingText}>Checking school code...</Text>
+      ) : schoolCodeError ? (
+        <Text style={styles.fieldError}>{schoolCodeError}</Text>
+      ) : null}
       <WebSelect
         label="School Type"
         value={form.school_type}
@@ -189,30 +517,33 @@ export default function DCCreateSaleScreen({ navigation }: any) {
       />
       <Text style={styles.label}>Contact mobile *</Text>
       <WebInput
-        placeholder="Contact mobile"
+        placeholder="10-digit mobile"
         value={form.contact_mobile}
-        onChangeText={(v) => setField('contact_mobile', v)}
+        onChangeText={(v) => setField('contact_mobile', v.replace(/\D/g, '').slice(0, 10))}
         keyboardType="phone-pad"
+        maxLength={10}
       />
-      <Text style={styles.label}>Email</Text>
+      <Text style={styles.label}>Email *</Text>
       <WebInput
-        placeholder="Email"
+        placeholder="Enter email address"
         value={form.email}
         onChangeText={(v) => setField('email', v)}
         keyboardType="email-address"
+        autoCapitalize="none"
       />
-      <Text style={styles.label}>Contact Person 2</Text>
+      <Text style={styles.label}>Contact Person 2 *</Text>
       <WebInput
         placeholder="Contact Person 2"
         value={form.contact_person2}
         onChangeText={(v) => setField('contact_person2', v)}
       />
-      <Text style={styles.label}>Contact Mobile 2</Text>
+      <Text style={styles.label}>Contact Mobile 2 *</Text>
       <WebInput
-        placeholder="Contact Mobile 2"
+        placeholder="10-digit mobile"
         value={form.contact_mobile2}
-        onChangeText={(v) => setField('contact_mobile2', v)}
+        onChangeText={(v) => setField('contact_mobile2', v.replace(/\D/g, '').slice(0, 10))}
         keyboardType="phone-pad"
+        maxLength={10}
       />
       <Text style={styles.label}>Location/Town</Text>
       <WebInput
@@ -220,7 +551,50 @@ export default function DCCreateSaleScreen({ navigation }: any) {
         value={form.location}
         onChangeText={(v) => setField('location', v)}
       />
-      <Text style={styles.label}>Address</Text>
+      <Text style={styles.label}>Pincode *</Text>
+      <WebInput
+        placeholder="Enter 6-digit pincode"
+        value={form.pincode}
+        onChangeText={handlePincodeChange}
+        keyboardType="number-pad"
+        maxLength={6}
+        style={pincodeError ? styles.inputError : undefined}
+      />
+      {loadingPincode ? (
+        <Text style={styles.checkingText}>Loading location details...</Text>
+      ) : pincodeError ? (
+        <Text style={styles.fieldError}>{pincodeError}</Text>
+      ) : null}
+      <Text style={styles.label}>State</Text>
+      <WebInput
+        placeholder="Auto-filled from pincode"
+        value={form.state}
+        onChangeText={(v) => setField('state', v)}
+      />
+      <Text style={styles.label}>District</Text>
+      <WebInput
+        placeholder="Auto-filled from pincode"
+        value={form.city}
+        onChangeText={(v) => setField('city', v)}
+      />
+      <Text style={styles.label}>City/Town</Text>
+      <WebInput
+        placeholder="Auto-filled from pincode"
+        value={form.region}
+        onChangeText={(v) => setField('region', v)}
+      />
+      <WebSelect
+        label="Area / Locality"
+        value={form.area}
+        onValueChange={(v) => setField('area', v)}
+        items={areas.map((a) => ({
+          label: `${a.name}${a.block ? ` - ${a.block}` : ''}${a.branchType ? ` (${a.branchType})` : ''}`.trim(),
+          value: a.name,
+        }))}
+        placeholder={areas.length === 0 ? 'Enter pincode first' : 'Select exact area'}
+        disabled={areas.length === 0}
+      />
+      <Text style={styles.label}>Address *</Text>
       <WebInput
         placeholder="Address"
         value={form.address}
@@ -288,11 +662,18 @@ export default function DCCreateSaleScreen({ navigation }: any) {
       />
       <Text style={styles.label}>Zone</Text>
       <WebInput placeholder="Zone" value={form.zone} onChangeText={(v) => setField('zone', v)} />
-      <Text style={styles.label}>No. of Branches</Text>
+      <Text style={styles.label}>No. of Branches *</Text>
       <WebInput
         placeholder="No. of Branches"
         value={form.branches}
         onChangeText={(v) => setField('branches', v)}
+        keyboardType="number-pad"
+      />
+      <Text style={styles.label}>Average School Fee *</Text>
+      <WebInput
+        placeholder="Average School Fee"
+        value={form.average_fee}
+        onChangeText={(v) => setField('average_fee', v)}
         keyboardType="number-pad"
       />
       <WebSelect
@@ -311,49 +692,22 @@ export default function DCCreateSaleScreen({ navigation }: any) {
       {employees.length === 0 && !loadingEmployees ? (
         <Text style={styles.errorText}>Create employees first in Users / Employees → New Employee</Text>
       ) : null}
-      <Text style={styles.label}>School strength (students)</Text>
+      <Text style={styles.label}>School strength (students) *</Text>
       <WebInput
         placeholder="School strength (students)"
         value={form.strength}
         onChangeText={(v) => setField('strength', v)}
         keyboardType="number-pad"
       />
-      <View style={styles.fieldContainer}>
-        <Text style={styles.label}>Follow-up date</Text>
-        <TouchableOpacity style={styles.dateTouchable} onPress={() => setShowFollowUpPicker(true)}>
-          <Text style={[styles.dateText, !form.follow_up_date && styles.placeholderText]}>
-            {form.follow_up_date || 'Tap to pick date'}
-          </Text>
-          <Text>📅</Text>
-        </TouchableOpacity>
-      </View>
-      {showFollowUpPicker ? (
-        <Modal visible transparent animationType="slide">
-          <TouchableOpacity
-            style={styles.datePickerOverlay}
-            activeOpacity={1}
-            onPress={() => setShowFollowUpPicker(false)}
-          />
-          <View style={styles.datePickerBox}>
-            <View style={styles.datePickerHeader}>
-              <Text style={styles.datePickerTitle}>Follow-up date</Text>
-              <TouchableOpacity onPress={() => setShowFollowUpPicker(false)}>
-                <Text style={styles.doneText}>Done</Text>
-              </TouchableOpacity>
-            </View>
-            <DateTimePicker
-              value={form.follow_up_date ? new Date(form.follow_up_date + 'T00:00:00') : new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'calendar'}
-              onChange={(_, d) => {
-                if (d) setField('follow_up_date', d.toISOString().split('T')[0]);
-                if (Platform.OS === 'android') setShowFollowUpPicker(false);
-              }}
-            />
-          </View>
-        </Modal>
-      ) : null}
-      <Text style={styles.label}>Remarks</Text>
+      <DateField
+        label="Follow-up date"
+        value={form.follow_up_date}
+        onChange={(v) => setField('follow_up_date', v)}
+        showPicker={showFollowUpPicker}
+        setShowPicker={setShowFollowUpPicker}
+        minimumDate={startOfToday()}
+      />
+      <Text style={styles.label}>Remarks *</Text>
       <WebInput
         placeholder="Remarks"
         value={form.remarks}
@@ -374,6 +728,9 @@ export default function DCCreateSaleScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 },
+  fieldError: { ...typography.body.small, color: colors.error, marginBottom: 10, marginTop: -4 },
+  checkingText: { ...typography.body.small, color: '#2563EB', marginBottom: 10, marginTop: -4 },
+  inputError: { borderColor: colors.error },
   sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginTop: 8, marginBottom: 8 },
   hint: { ...typography.body.small, color: colors.textSecondary, marginBottom: 12 },
   errorText: { ...typography.body.small, color: colors.error, marginBottom: 12 },

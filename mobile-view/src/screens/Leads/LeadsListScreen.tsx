@@ -60,6 +60,11 @@ export default function LeadsListScreen({ navigation }: any) {
       
       const response = await apiService.get(endpoint);
       const data = Array.isArray(response) ? response : (response?.data || []);
+      data.sort((a: Lead, b: Lead) => {
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      });
       setLeads(data);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load leads');

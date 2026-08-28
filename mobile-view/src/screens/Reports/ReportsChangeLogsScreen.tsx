@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -13,22 +13,23 @@ import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives
 import { apiService } from '../../services/api';
 import { downloadApiFile } from '../../utils/downloadChangeLogsReport';
 
-type ChangeLogEntry = {
+type ChangeLog = {
   _id: string;
-  timestamp: string;
-  entity: string;
-  action: string;
-  summaryTitle: string;
-  summarySubtitle?: string;
-  modifiedFields?: string[];
-  performedBy?: { name?: string };
+  entityType?: string;
+  entityId?: string;
+  action?: string;
+  summary?: string;
+  fields?: string[];
+  actorName?: string;
+  actorEmail?: string;
+  createdAt?: string;
 };
 
-type ChangeLogSummary = {
-  totalActivities: number;
-  creates: number;
-  updates: number;
-  topModifiedEntity: string;
+type ChangeLogStats = {
+  creates?: number;
+  updates?: number;
+  deletes?: number;
+  topEntity?: string;
 };
 
 function formatWhen(dateStr?: string) {
@@ -36,6 +37,7 @@ function formatWhen(dateStr?: string) {
   const date = new Date(dateStr);
   if (Number.isNaN(date.getTime())) return '-';
   return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     day: '2-digit',
     month: 'short',
     year: 'numeric',
@@ -45,101 +47,73 @@ function formatWhen(dateStr?: string) {
   });
 }
 
-function normalizeResponse(data: unknown): { summary: ChangeLogSummary; data: ChangeLogEntry[] } {
-  if (data && typeof data === 'object' && Array.isArray((data as { data?: ChangeLogEntry[] }).data)) {
-    const payload = data as { summary?: ChangeLogSummary; data: ChangeLogEntry[] };
-    return {
-      summary: payload.summary || {
-        totalActivities: payload.data.length,
-        creates: payload.data.filter((e) => e.action === 'Create').length,
-        updates: payload.data.filter((e) => e.action === 'Update').length,
-        topModifiedEntity: '-',
-      },
-      data: payload.data,
-    };
-  }
-  return {
-    summary: { totalActivities: 0, creates: 0, updates: 0, topModifiedEntity: '-' },
-    data: [],
-  };
+function splitSummary(summary?: string) {
+  const value = (summary || '').trim();
+  if (!value) return { title: '-', detail: '' };
+  const parts = value.split(/\s+[—–-]\s+/);
+  if (parts.length < 2) return { title: value, detail: '' };
+  return { title: parts[0], detail: parts.slice(1).join(' — ') };
+}
+
+function performedBy(row: ChangeLog) {
+  return row.actorName || row.actorEmail || 'Amenity (System)';
+}
+
+function capitalizeAction(action?: string) {
+  const value = (action || '').trim();
+  if (!value) return '-';
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
 export default function ReportsChangeLogsScreen() {
-  const [allLogs, setAllLogs] = useState<ChangeLogEntry[]>([]);
-  const [logs, setLogs] = useState<ChangeLogEntry[]>([]);
-  const [summary, setSummary] = useState<ChangeLogSummary>({
-    totalActivities: 0,
-    creates: 0,
-    updates: 0,
-    topModifiedEntity: '-',
-  });
+  const [rows, setRows] = useState<ChangeLog[]>([]);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState<ChangeLogStats>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const [entity, setEntity] = useState('');
+  const [entityType, setEntityType] = useState('');
   const [action, setAction] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    loadLogs();
-  }, []);
+  const buildQuery = useCallback(() => {
+    const qs = new URLSearchParams();
+    if (entityType) qs.set('entityType', entityType);
+    if (action) qs.set('action', action.toLowerCase());
+    if (fromDate) qs.set('fromDate', fromDate);
+    if (toDate) qs.set('toDate', toDate);
+    if (search.trim()) qs.set('search', search.trim());
+    qs.set('page', '1');
+    qs.set('limit', '200');
+    return qs;
+  }, [entityType, action, fromDate, toDate, search]);
 
-  useEffect(() => {
-    applyFilters();
-  }, [allLogs, entity, action, fromDate, toDate, search]);
-
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await apiService.get<unknown>('/change-logs');
-      const normalized = normalizeResponse(data);
-      setAllLogs(normalized.data ?? []);
-      setSummary(
-        normalized.summary ?? {
-          totalActivities: 0,
-          creates: 0,
-          updates: 0,
-          topModifiedEntity: '-',
-        }
-      );
+      const qs = buildQuery();
+      const data = await apiService.get(`/reports/change-logs?${qs.toString()}`);
+      const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      setRows(list);
+      setTotal(Number(data?.total) || list.length);
+      setStats(data?.stats || {});
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load change logs');
-      setAllLogs([]);
+      setRows([]);
+      setTotal(0);
+      setStats({});
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [buildQuery]);
 
-  const applyFilters = () => {
-    let filtered = [...allLogs];
-
-    if (entity) filtered = filtered.filter((log) => (log.entity || '').toLowerCase() === entity.toLowerCase());
-    if (action) filtered = filtered.filter((log) => (log.action || '').toLowerCase() === action.toLowerCase());
-    if (fromDate) {
-      const from = new Date(fromDate);
-      filtered = filtered.filter((log) => log.timestamp && new Date(log.timestamp) >= from);
-    }
-    if (toDate) {
-      const to = new Date(`${toDate}T23:59:59`);
-      filtered = filtered.filter((log) => log.timestamp && new Date(log.timestamp) <= to);
-    }
-    if (search.trim()) {
-      const term = search.trim().toLowerCase();
-      filtered = filtered.filter((log) =>
-        [log.summaryTitle, log.summarySubtitle, log.entity, log.action, log.performedBy?.name]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(term)
-      );
-    }
-
-    setLogs(filtered);
-  };
+  useEffect(() => {
+    loadLogs();
+  }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -149,13 +123,10 @@ export default function ReportsChangeLogsScreen() {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const params = new URLSearchParams();
-      if (entity) params.append('entity', entity);
-      if (action) params.append('action', action);
-      if (fromDate) params.append('fromDate', fromDate);
-      if (toDate) params.append('toDate', toDate);
-      if (search.trim()) params.append('search', search.trim());
-      await downloadApiFile(params.toString());
+      const qs = buildQuery();
+      qs.delete('page');
+      qs.delete('limit');
+      await downloadApiFile(qs.toString());
       Alert.alert('Success', 'Excel file downloaded successfully');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to export');
@@ -164,10 +135,33 @@ export default function ReportsChangeLogsScreen() {
     }
   };
 
-  const createsVsUpdates = useMemo(
-    () => `${summary.creates} Created • ${summary.updates} Updated`,
-    [summary.creates, summary.updates]
-  );
+  const kpis = useMemo(() => {
+    const createCount =
+      stats.creates ??
+      rows.filter((row) => (row.action || '').toLowerCase() === 'create').length;
+    const updateCount =
+      stats.updates ??
+      rows.filter((row) => (row.action || '').toLowerCase() === 'update').length;
+    let topEntity = stats.topEntity || '';
+    if (!topEntity) {
+      const counts: Record<string, number> = {};
+      rows.forEach((row) => {
+        const type = row.entityType || 'Unknown';
+        counts[type] = (counts[type] || 0) + 1;
+      });
+      const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      topEntity =
+        ranked.length >= 2
+          ? `${ranked[0][0]} & ${ranked[1][0]}`
+          : ranked[0]?.[0] || '—';
+    }
+    return {
+      total: total || rows.length,
+      createCount,
+      updateCount,
+      topEntity,
+    };
+  }, [rows, total, stats]);
 
   return (
     <ScreenShell
@@ -189,26 +183,28 @@ export default function ReportsChangeLogsScreen() {
         <View style={styles.kpiRow}>
           <View style={[styles.kpiCard, styles.kpiBlue]}>
             <Text style={styles.kpiLabel}>TOTAL ACTIVITIES</Text>
-            <Text style={styles.kpiValue}>{summary.totalActivities}</Text>
+            <Text style={styles.kpiValue}>{kpis.total}</Text>
             <Text style={styles.kpiSub}>Recorded</Text>
           </View>
           <View style={[styles.kpiCard, styles.kpiGreen]}>
             <Text style={styles.kpiLabel}>CREATES VS UPDATES</Text>
-            <Text style={styles.kpiValueSmall}>{createsVsUpdates}</Text>
+            <Text style={styles.kpiValueSmall}>
+              {kpis.createCount} Created • {kpis.updateCount} Updated
+            </Text>
           </View>
           <View style={[styles.kpiCard, styles.kpiOrange]}>
             <Text style={styles.kpiLabel}>TOP MODIFIED ENTITY</Text>
-            <Text style={styles.kpiValue}>{summary.topModifiedEntity}</Text>
+            <Text style={styles.kpiValue}>{kpis.topEntity}</Text>
           </View>
         </View>
 
         <View style={styles.filters}>
           <WebLabel>Entity</WebLabel>
           <WebSelect
-            value={entity || 'all'}
-            onValueChange={(val) => setEntity(val === 'all' ? '' : val)}
+            placeholder="All Entities"
+            value={entityType}
+            onValueChange={setEntityType}
             items={[
-              { label: 'All Entities', value: 'all' },
               { label: 'Lead', value: 'Lead' },
               { label: 'DC', value: 'DC' },
               { label: 'DcOrder', value: 'DcOrder' },
@@ -221,13 +217,13 @@ export default function ReportsChangeLogsScreen() {
           />
           <WebLabel>Action</WebLabel>
           <WebSelect
-            value={action || 'all'}
-            onValueChange={(val) => setAction(val === 'all' ? '' : val)}
+            placeholder="All Actions"
+            value={action}
+            onValueChange={setAction}
             items={[
-              { label: 'All Actions', value: 'all' },
-              { label: 'Create', value: 'Create' },
-              { label: 'Update', value: 'Update' },
-              { label: 'Delete', value: 'Delete' },
+              { label: 'Create', value: 'create' },
+              { label: 'Update', value: 'update' },
+              { label: 'Delete', value: 'delete' },
             ]}
           />
           <WebLabel>From</WebLabel>
@@ -241,25 +237,30 @@ export default function ReportsChangeLogsScreen() {
 
         <View style={styles.tableHeader}>
           <Text style={styles.tableTitle}>Activity log</Text>
-          <Text style={styles.tableCount}>{logs.length} records</Text>
+          <Text style={styles.tableCount}>{kpis.total} records</Text>
         </View>
 
-        {logs.length === 0 && !loading ? (
+        {rows.length === 0 && !loading ? (
           <Text style={styles.empty}>No activity records found.</Text>
         ) : (
-          logs.map((log) => (
-            <View key={log._id} style={styles.row}>
-              <Text style={styles.when}>{formatWhen(log.timestamp)}</Text>
-              <View style={styles.badges}>
-                <Text style={[styles.badge, styles.entityBadge]}>{log.entity}</Text>
-                <Text style={[styles.badge, styles.actionBadge]}>{log.action}</Text>
+          rows.map((log) => {
+            const { title, detail } = splitSummary(log.summary);
+            return (
+              <View key={log._id} style={styles.row}>
+                <Text style={styles.when}>{formatWhen(log.createdAt)}</Text>
+                <View style={styles.badges}>
+                  <Text style={[styles.badge, styles.entityBadge]}>{log.entityType || '-'}</Text>
+                  <Text style={[styles.badge, styles.actionBadge]}>
+                    {capitalizeAction(log.action)}
+                  </Text>
+                </View>
+                <Text style={styles.summaryTitle}>{title}</Text>
+                {detail ? <Text style={styles.summarySub}>{detail}</Text> : null}
+                <Text style={styles.fields}>{(log.fields || []).join(' • ') || '-'}</Text>
+                <Text style={styles.performer}>{performedBy(log)}</Text>
               </View>
-              <Text style={styles.summaryTitle}>{log.summaryTitle}</Text>
-              {log.summarySubtitle ? <Text style={styles.summarySub}>{log.summarySubtitle}</Text> : null}
-              <Text style={styles.fields}>{(log.modifiedFields || []).join(' • ') || '-'}</Text>
-              <Text style={styles.performer}>{log.performedBy?.name || 'Amenity (System)'}</Text>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </ScreenShell>
@@ -277,17 +278,43 @@ const styles = StyleSheet.create({
   kpiValue: { fontSize: 24, fontWeight: '700', color: colors.textPrimary, marginTop: 4 },
   kpiValueSmall: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginTop: 4 },
   kpiSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  filters: { gap: spacing.xs, backgroundColor: colors.backgroundLight, padding: spacing.md, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border },
+  filters: {
+    gap: spacing.xs,
+    backgroundColor: colors.backgroundLight,
+    padding: spacing.md,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   tableHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   tableTitle: { fontSize: 18, fontWeight: '700', color: colors.textPrimary },
   tableCount: { fontSize: 13, color: colors.textSecondary },
   empty: { textAlign: 'center', color: colors.textSecondary, paddingVertical: spacing.lg },
-  row: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: spacing.md, gap: 4, backgroundColor: '#fff' },
+  row: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    padding: spacing.md,
+    gap: 4,
+    backgroundColor: '#fff',
+  },
   when: { fontSize: 12, color: colors.textSecondary },
   badges: { flexDirection: 'row', gap: 8, marginVertical: 4 },
-  badge: { fontSize: 11, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, overflow: 'hidden' },
+  badge: {
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
   entityBadge: { backgroundColor: '#EDE9FE', color: '#6D28D9' },
-  actionBadge: { backgroundColor: '#ECFDF5', color: '#047857', borderWidth: 1, borderColor: '#BBF7D0' },
+  actionBadge: {
+    backgroundColor: '#ECFDF5',
+    color: '#047857',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
   summaryTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
   summarySub: { fontSize: 12, color: colors.textSecondary },
   fields: { fontSize: 12, color: colors.textSecondary },

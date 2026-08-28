@@ -253,6 +253,7 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
     lrCost: '',
     deliveryStatus: '',
     remarks: '',
+    poRemarks: '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -356,6 +357,7 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
         lrCost: full?.lrCost != null ? String(full.lrCost) : row.lrCost || '',
         deliveryStatus: full?.deliveryStatus || row.deliveryStatus || '',
         remarks: full?.deliveryNotes || row.remarks || '',
+        poRemarks: full?.dcRemarks || '',
       });
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to open edit');
@@ -373,13 +375,17 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
       ['lrDate', 'LR Date'],
       ['lrCost', 'LR Cost'],
       ['deliveryStatus', 'Delivery Status'],
-      ['remarks', 'Remarks'],
+      ['remarks', 'LR / Warehouse Remarks'],
     ];
     for (const [key, label] of required) {
       if (!(editForm as any)[key]?.toString().trim()) {
         Alert.alert('Required', `${label} is required.`);
         return;
       }
+    }
+    if (!/^\d+$/.test(editForm.boxes.trim())) {
+      Alert.alert('Invalid Boxes', 'Boxes must contain numbers only.');
+      return;
     }
     setSaving(true);
     try {
@@ -679,6 +685,29 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
     </View>
   );
 
+  const DateField = ({ label, value, onChangeText }: { label: string; value: string; onChangeText: (value: string) => void }) => (
+    <View style={styles.fieldWrap}>
+      <WebLabel>{label}</WebLabel>
+      {Platform.OS === 'web'
+        ? React.createElement('input', {
+            type: 'date',
+            value: value || '',
+            onChange: (event: any) => onChangeText(event.target.value || ''),
+            style: {
+              width: '100%',
+              padding: 12,
+              borderRadius: 8,
+              border: '1px solid #E2E8F0',
+              fontSize: 15,
+              backgroundColor: '#FFFFFF',
+              color: '#1E293B',
+              boxSizing: 'border-box',
+            },
+          })
+        : <WebInput value={value} onChangeText={onChangeText} placeholder="YYYY-MM-DD" />}
+    </View>
+  );
+
   return (
     <ScreenShell
       title="Completed DC"
@@ -818,7 +847,12 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
             <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
               <LabeledInput label="Transport *" value={editForm.transport} onChangeText={(v) => setEditForm((p) => ({ ...p, transport: v }))} />
               <LabeledInput label="LR No *" value={editForm.lrNo} onChangeText={(v) => setEditForm((p) => ({ ...p, lrNo: v }))} />
-              <LabeledInput label="Boxes *" value={editForm.boxes} onChangeText={(v) => setEditForm((p) => ({ ...p, boxes: v }))} />
+              <LabeledInput
+                label="Boxes *"
+                value={editForm.boxes}
+                keyboardType="numeric"
+                onChangeText={(v) => setEditForm((p) => ({ ...p, boxes: v.replace(/[^0-9]/g, '') }))}
+              />
               <WebSelect
                 label="DC Category *"
                 value={editForm.dcCategory}
@@ -830,11 +864,10 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
                 value={editForm.transportArea}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, transportArea: v }))}
               />
-              <LabeledInput
-                label="LR Date * (YYYY-MM-DD)"
+              <DateField
+                label="LR Date *"
                 value={editForm.lrDate}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, lrDate: v }))}
-                placeholder="YYYY-MM-DD"
               />
               <LabeledInput label="LR Cost *" value={editForm.lrCost} onChangeText={(v) => setEditForm((p) => ({ ...p, lrCost: v }))} />
               <WebSelect
@@ -844,9 +877,17 @@ export default function WarehouseCompletedDCScreen({ navigation }: any) {
                 items={DELIVERY_STATUS_OPTIONS.map((o) => ({ label: o, value: o }))}
               />
               <LabeledInput
-                label="Remarks *"
+                label="PO Remarks (up to PO done)"
+                value={editForm.poRemarks}
+                onChangeText={() => {}}
+                editable={false}
+                placeholder="—"
+              />
+              <LabeledInput
+                label="LR / Warehouse Remarks *"
                 value={editForm.remarks}
                 onChangeText={(v) => setEditForm((p) => ({ ...p, remarks: v }))}
+                placeholder="Enter LR / warehouse remarks"
                 multiline
               />
               <WebButton title={saving ? 'Saving…' : 'Save'} onPress={saveEdit} disabled={saving} />

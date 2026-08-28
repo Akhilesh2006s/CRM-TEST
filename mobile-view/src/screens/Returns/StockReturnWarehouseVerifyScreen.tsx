@@ -1,227 +1,272 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
   ScrollView,
-  TextInput,
   Alert,
   ActivityIndicator,
-  Image,
+  Platform,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
-import { apiService, getApiUrl } from '../../services/api';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebLabel, WebSelect } from '../../ui/WebPrimitives';
+import { apiService } from '../../services/api';
 
-const CONDITION_OPTIONS = ['Sellable', 'Damaged', 'Expired', 'Missing'];
+type DcOrderRef = {
+  _id?: string;
+  school_name?: string;
+  school_code?: string;
+  contact_person?: string;
+  contact_mobile?: string;
+  address?: string;
+  zone?: string;
+  location?: string;
+  city?: string;
+  area?: string;
+  cluster_code?: string;
+  transport_name?: string;
+  transport_location?: string;
+};
 
-function normalizeQty(value: unknown): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : NaN;
-}
+type StockReturnDetail = {
+  _id: string;
+  returnId?: string;
+  returnNumber?: number;
+  status?: string;
+  returnStatus?: string;
+  returnDate?: string;
+  lrNumber?: string;
+  lrDate?: string;
+  remarks?: string;
+  whReturnRemarks?: string;
+  transport?: string;
+  town?: string;
+  address?: string;
+  zone?: string;
+  cluster?: string;
+  contactPerson?: string;
+  contactMobile?: string;
+  schoolCode?: string;
+  customerName?: string;
+  dcOrderId?: DcOrderRef | string;
+  products?: Array<{
+    product: string;
+    level?: string;
+    returnQty: number;
+    receivedQty?: number;
+    reason?: string;
+  }>;
+};
 
-function isQuantityMismatch(returnQty: unknown, receivedQty: unknown): boolean {
-  const expected = normalizeQty(returnQty);
-  const received = normalizeQty(receivedQty);
-  if (Number.isNaN(expected) || Number.isNaN(received)) return false;
-  return expected > 0 && received !== expected;
-}
-
-function resolveInitialReceivedQty(
-  returnQty: unknown,
-  receivedQty: unknown,
-  condition?: string
-): number {
-  const expected = normalizeQty(returnQty);
-  const received = normalizeQty(receivedQty);
-  const hasPriorVerification =
-    Boolean(String(condition || '').trim()) ||
-    (Number.isFinite(received) && receivedQty != null && receivedQty !== '' && received > 0);
-
-  if (hasPriorVerification && Number.isFinite(received)) {
-    return received;
-  }
-
-  return Number.isFinite(expected) ? expected : 0;
-}
-
-function formatDate(d: string | undefined) {
-  if (!d) return '-';
-  try {
-    return new Date(d).toLocaleDateString('en-IN');
-  } catch {
-    return '-';
-  }
-}
-
-type ProductVerification = {
-  product: string;
+type ProductLine = {
+  id: string;
+  productRaw: string;
+  productLabel: string;
+  qty: number;
   returnQty: number;
   reason: string;
-  remarks?: string;
-  receivedQty: string;
   condition: string;
-  batchLot: string;
-  storageLocation: string;
-  quantityMismatch: boolean;
   mismatchRemark: string;
 };
 
+function toDateInput(value?: string | Date | null): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function resolveReturnStatus(detail: StockReturnDetail): string {
+  return String(detail.status || detail.returnStatus || '').trim();
+}
+
+function canVerify(status: string) {
+  const s = status.trim();
+  return s === 'Submitted' || s === 'Sent Back';
+}
+
 export default function StockReturnWarehouseVerifyScreen({ navigation, route }: any) {
   const returnId = route?.params?.returnId as string;
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [returnDoc, setReturnDoc] = useState<any>(null);
-  const [productRows, setProductRows] = useState<ProductVerification[]>([]);
-  const [warehousePhotos, setWarehousePhotos] = useState<string[]>([]);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-  useEffect(() => {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [detail, setDetail] = useState<StockReturnDetail | null>(null);
+
+  const [schoolName, setSchoolName] = useState('');
+  const [schoolCode, setSchoolCode] = useState('');
+  const [contactPerson, setContactPerson] = useState('');
+  const [contactMobile, setContactMobile] = useState('');
+  const [town, setTown] = useState('');
+  const [address, setAddress] = useState('');
+  const [zone, setZone] = useState('');
+  const [cluster, setCluster] = useState('');
+  const [moreRemarks, setMoreRemarks] = useState('');
+
+  const [returnDate, setReturnDate] = useState('');
+  const [whReturnRemarks, setWhReturnRemarks] = useState('');
+  const [lrDate, setLrDate] = useState('');
+  const [transport, setTransport] = useState('');
+  const [lrNumber, setLrNumber] = useState('');
+  const [lines, setLines] = useState<ProductLine[]>([]);
+
+  const returnStatus = detail ? resolveReturnStatus(detail) : '';
+  const canEdit = detail ? canVerify(returnStatus) : false;
+  const readOnly = !canEdit;
+
+  const loadDetail = useCallback(async () => {
     if (!returnId) return;
-    (async () => {
-      try {
-        setLoading(true);
-        const doc = await apiService.get(`/stock-returns/warehouse-executive/${returnId}`);
-        setReturnDoc(doc);
-        const rows: ProductVerification[] = (doc.products || []).map((p: any) => {
-          const returnQty = normalizeQty(p.returnQty) || 0;
-          const receivedQty = resolveInitialReceivedQty(p.returnQty, p.receivedQty, p.condition);
-          const mismatch = isQuantityMismatch(p.returnQty, receivedQty);
-          return {
-            product: p.product || '',
-            returnQty,
-            reason: p.reason || '',
-            remarks: p.remarks,
-            receivedQty: String(receivedQty),
-            condition: p.condition || '',
-            batchLot: p.batchLot || '',
-            storageLocation: p.storageLocation || '',
-            quantityMismatch: mismatch,
-            mismatchRemark: mismatch ? (p.mismatchRemark || '') : '',
-          };
-        });
-        setProductRows(rows);
-        setWarehousePhotos(Array.isArray(doc.warehousePhotos) ? doc.warehousePhotos : []);
-      } catch (e: any) {
-        Alert.alert('Error', e.message || 'Failed to load return');
-        navigation.goBack();
-      } finally {
-        setLoading(false);
-      }
-    })();
+    setLoading(true);
+    try {
+      const data = (await apiService.get(
+        `/stock-returns/warehouse-executive/${returnId}`,
+      )) as StockReturnDetail;
+      const normalized: StockReturnDetail = {
+        ...data,
+        status: resolveReturnStatus(data),
+      };
+      setDetail(normalized);
+      const dc =
+        data.dcOrderId && typeof data.dcOrderId === 'object' ? data.dcOrderId : null;
+
+      setSchoolName(dc?.school_name || data.customerName || '');
+      setSchoolCode(data.schoolCode || dc?.school_code || '');
+      setContactPerson(data.contactPerson || dc?.contact_person || '');
+      setContactMobile(data.contactMobile || dc?.contact_mobile || '');
+      setTown(data.town || dc?.city || dc?.area || dc?.location || '');
+      setAddress(data.address || dc?.address || '');
+      setZone(data.zone || dc?.zone || '');
+      setCluster(data.cluster || dc?.cluster_code || '');
+      setMoreRemarks(data.remarks || '');
+
+      setReturnDate(toDateInput(data.returnDate));
+      setWhReturnRemarks(data.whReturnRemarks || '');
+      setLrDate(toDateInput(data.lrDate || data.returnDate));
+      setTransport(
+        data.transport || dc?.transport_name || dc?.transport_location || '',
+      );
+      setLrNumber(data.lrNumber || '');
+
+      const rows: ProductLine[] = (data.products || []).map((p, idx) => ({
+        id: `line-${idx}`,
+        productRaw: (p.product || '').trim(),
+        productLabel: (p.product || '').trim() || '—',
+        qty: Number(p.receivedQty) || 0,
+        returnQty: Number(p.returnQty) || 0,
+        reason: p.reason || 'Excess',
+        condition: (p as any).condition || '',
+        mismatchRemark: (p as any).mismatchRemark || '',
+      }));
+      setLines(rows);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to load return', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   }, [returnId, navigation]);
 
-  const updateProduct = (index: number, field: keyof ProductVerification, value: string | number | boolean) => {
-    setProductRows((prev) => {
-      const next = [...prev];
-      const p = next[index];
-      if (!p) return prev;
-      (p as any)[field] = value;
-      if (field === 'receivedQty') {
-        const received = typeof value === 'string' ? parseInt(value, 10) : Number(value);
-        p.quantityMismatch = isQuantityMismatch(p.returnQty, received);
-        if (!p.quantityMismatch) {
-          p.mismatchRemark = '';
-        }
-      }
-      return next;
-    });
-  };
+  useEffect(() => {
+    loadDetail();
+  }, [loadDetail]);
 
-  const addWarehousePhoto = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission', 'We need photo access to add evidence.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        quality: 0.8,
-      });
-      if (result.canceled || !result.assets[0]) return;
-      const uri = result.assets[0].uri;
-      setUploadingPhoto(true);
-      const formData = new FormData();
-      const filename = uri.split('/').pop() || 'photo.jpg';
-      formData.append('photo', { uri, name: filename, type: 'image/jpeg' } as any);
-      const token = await AsyncStorage.getItem('authToken');
-      const response = await fetch(`${getApiUrl()}/stock-returns/upload-photo`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.message || 'Upload failed');
-      }
-      const data = await response.json();
-      const url = data.photoUrl || data.url;
-      if (url) setWarehousePhotos((prev) => [...prev, url]);
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to upload photo');
-    } finally {
-      setUploadingPhoto(false);
-    }
-  };
-
-  const removeWarehousePhoto = (index: number) => {
-    setWarehousePhotos((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const canSubmit = productRows.length > 0 && productRows.every((p) => {
-    const received = parseInt(p.receivedQty, 10);
-    return !isNaN(received) && p.condition && (p.condition.trim() !== '');
+  const buildPayload = () => ({
+    returnDate: returnDate || undefined,
+    lrNumber,
+    lrDate: lrDate || undefined,
+    remarks: moreRemarks,
+    whReturnRemarks,
+    transport,
+    town,
+    address,
+    zone,
+    cluster,
+    contactPerson,
+    contactMobile,
+    schoolCode,
+    products: lines.map((l) => ({
+      product: l.productRaw || l.productLabel,
+      returnQty: l.returnQty,
+      receivedQty: l.qty,
+      qty: l.qty,
+      reason: l.reason || 'Excess',
+      condition: l.condition,
+      mismatchRemark: l.mismatchRemark,
+    })),
   });
 
-  const hasAnyMismatch = productRows.some((p) => isQuantityMismatch(p.returnQty, p.receivedQty));
-  const mismatchRemarkRequired = productRows.some(
-    (p) => isQuantityMismatch(p.returnQty, p.receivedQty) && !(p.mismatchRemark || '').trim()
-  );
-  const canSubmitWithMismatch = !mismatchRemarkRequired;
+  const updateLineQty = (lineId: string, raw: string) => {
+    const cleaned = raw.replace(/\D/g, '');
+    setLines((prev) =>
+      prev.map((l) =>
+        l.id === lineId ? { ...l, qty: cleaned === '' ? 0 : Number(cleaned) } : l,
+      ),
+    );
+  };
 
-  const handleSubmit = async () => {
-    if (!canSubmit) {
-      Alert.alert('Validation', 'Enter received quantity and condition for every product.');
+  const updateLineCondition = (lineId: string, condition: string) => {
+    setLines((prev) => prev.map((l) => (l.id === lineId ? { ...l, condition } : l)));
+  };
+
+  const updateMismatchRemark = (lineId: string, mismatchRemark: string) => {
+    setLines((prev) => prev.map((l) => (l.id === lineId ? { ...l, mismatchRemark } : l)));
+  };
+
+  const handleSave = async () => {
+    if (!detail || readOnly) return;
+    setSaving(true);
+    try {
+      await apiService.put(`/stock-returns/${detail._id}/warehouse-save`, buildPayload());
+      Alert.alert('Saved', 'Return update saved');
+      await loadDetail();
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSubmitToAdmin = async () => {
+    if (!detail || readOnly) return;
+    if (!returnDate) {
+      Alert.alert('Validation', 'Return date is required');
       return;
     }
-    if (hasAnyMismatch && !canSubmitWithMismatch) {
-      Alert.alert('Validation', 'Mismatch remark is required when received quantity does not match requested.');
+    if (!lrNumber.trim()) {
+      Alert.alert('Validation', 'Enter LR No from the delivery partner lorry receipt');
       return;
     }
+    if (!lrDate) {
+      Alert.alert('Validation', 'LR Date is required');
+      return;
+    }
+    if (lines.length === 0) {
+      Alert.alert('Validation', 'No products on this return');
+      return;
+    }
+    const missingQty = lines.find((l) => l.qty <= 0);
+    if (missingQty) {
+      Alert.alert(
+        'Validation',
+        `Enter received quantity for ${missingQty.productLabel || missingQty.productRaw || 'each product'}`,
+      );
+      return;
+    }
+    const missingCondition = lines.find((l) => !l.condition);
+    if (missingCondition) {
+      Alert.alert('Validation', `Select product condition for ${missingCondition.productLabel || 'each product'}`);
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const products = productRows.map((p) => {
-        const receivedQty = normalizeQty(p.receivedQty) || 0;
-        const mismatch = isQuantityMismatch(p.returnQty, receivedQty);
-        return {
-          product: p.product,
-          returnQty: p.returnQty,
-          reason: p.reason,
-          remarks: p.remarks,
-          receivedQty,
-          condition: p.condition,
-          batchLot: p.batchLot,
-          storageLocation: p.storageLocation,
-          quantityMismatch: mismatch,
-          mismatchRemark: mismatch ? (p.mismatchRemark || '').trim() : '',
-        };
-      });
-      const totalReceivedQty = products.reduce((s, p) => s + p.receivedQty, 0);
-      await apiService.put(`/stock-returns/${returnId}/warehouse-verify`, {
-        products,
-        warehousePhotos,
-        totalReceivedQty,
-      });
-      Alert.alert('Done', hasAnyMismatch ? 'Sent for manager review (quantity mismatch).' : 'Marked as received.');
-      navigation.goBack();
+      await apiService.put(`/stock-returns/${detail._id}/warehouse-verify`, buildPayload());
+      Alert.alert('Submitted', 'Submitted to Warehouse Manager', [
+        { text: 'OK', onPress: () => navigation.navigate('ReturnsWarehouseExecutive') },
+      ]);
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Failed to submit');
     } finally {
@@ -229,213 +274,315 @@ export default function StockReturnWarehouseVerifyScreen({ navigation, route }: 
     }
   };
 
-  if (loading || !returnDoc) {
+  if (loading || !detail) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Loading...</Text>
+        <Text style={styles.loadingText}>Loading return…</Text>
       </View>
     );
   }
 
-  const canEdit = ['Submitted', 'Sent Back'].includes(returnDoc.status);
-
   return (
     <ScreenShell
-      title="Verify Return"
-      loading={loading}
+      title="Stock Return Update"
+      subtitle={`Return No. ${detail.returnNumber ?? detail.returnId}${
+        readOnly ? ` (${returnStatus} — view only)` : ''
+      }`}
+      loading={false}
+      noScroll
     >
-<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        {/* Read-only */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Return details (read-only)</Text>
-          <Text style={styles.readOnlyLabel}>Return ID</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.returnId || returnDoc._id}</Text>
-          <Text style={styles.readOnlyLabel}>Customer</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.customerName || '—'}</Text>
-          <Text style={styles.readOnlyLabel}>Invoice / Sale ID</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.saleId || '—'}</Text>
-          <Text style={styles.readOnlyLabel}>Executive remarks</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.executiveRemarks || '—'}</Text>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>School Information</Text>
+          <WebLabel>School Name</WebLabel>
+          <WebInput value={schoolName} editable={false} style={styles.readonly} />
+          <WebLabel>School Code</WebLabel>
+          <WebInput
+            value={schoolCode}
+            onChangeText={setSchoolCode}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>Contact Person Name</WebLabel>
+          <WebInput
+            value={contactPerson}
+            onChangeText={setContactPerson}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>Contact Mobile</WebLabel>
+          <WebInput
+            value={contactMobile}
+            onChangeText={setContactMobile}
+            editable={!readOnly}
+            keyboardType="phone-pad"
+            style={readOnly ? styles.readonly : undefined}
+          />
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Products requested</Text>
-          {(returnDoc.products || []).map((p: any, i: number) => (
-            <View key={i} style={styles.readOnlyRow}>
-              <Text style={styles.readOnlyValue}>{p.product} — Qty: {p.returnQty}, Reason: {p.reason || '—'}</Text>
-              {p.remarks ? <Text style={styles.readOnlySmall}>{p.remarks}</Text> : null}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>More Information</Text>
+          <WebLabel>Town</WebLabel>
+          <WebInput
+            value={town}
+            onChangeText={setTown}
+            placeholder="Town"
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>Address</WebLabel>
+          <WebInput
+            value={address}
+            onChangeText={setAddress}
+            placeholder="Address"
+            multiline
+            numberOfLines={3}
+            editable={!readOnly}
+            style={[styles.textArea, readOnly ? styles.readonly : null]}
+          />
+          <WebLabel>Zone</WebLabel>
+          <WebInput
+            value={zone}
+            onChangeText={setZone}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>Cluster</WebLabel>
+          <WebInput
+            value={cluster}
+            onChangeText={setCluster}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>Remarks</WebLabel>
+          <WebInput
+            value={moreRemarks}
+            onChangeText={setMoreRemarks}
+            placeholder="Remarks"
+            multiline
+            numberOfLines={2}
+            editable={!readOnly}
+            style={[styles.textArea, readOnly ? styles.readonly : null]}
+          />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Stock Return Information Update</Text>
+
+          {readOnly ? (
+            <View style={styles.readOnlyBanner}>
+              <Text style={styles.readOnlyBannerText}>
+                This return is already {returnStatus}. Open a return with status Submitted to
+                enter received quantity, LR details, and submit to the manager.
+              </Text>
             </View>
-          ))}
-        </View>
+          ) : null}
 
-        {(returnDoc.evidencePhotos || []).length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Executive photos</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {(returnDoc.evidencePhotos || []).map((url: string, i: number) => (
-                <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
-              ))}
-            </ScrollView>
-          </View>
-        )}
+          <WebLabel>Return Date</WebLabel>
+          <WebInput
+            value={returnDate}
+            onChangeText={setReturnDate}
+            placeholder="YYYY-MM-DD"
+            {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>LR Date</WebLabel>
+          <WebInput
+            value={lrDate}
+            onChangeText={setLrDate}
+            placeholder="YYYY-MM-DD"
+            {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>LR No *</WebLabel>
+          <WebInput
+            value={lrNumber}
+            onChangeText={setLrNumber}
+            placeholder="From delivery partner lorry receipt"
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          {!readOnly ? (
+            <Text style={styles.helpText}>
+              Enter the lorry receipt number from the delivery partner when goods arrive.
+            </Text>
+          ) : null}
+          <WebLabel>Transport</WebLabel>
+          <WebInput
+            value={transport}
+            onChangeText={setTransport}
+            editable={!readOnly}
+            style={readOnly ? styles.readonly : undefined}
+          />
+          <WebLabel>WH Return Remarks</WebLabel>
+          <WebInput
+            value={whReturnRemarks}
+            onChangeText={setWhReturnRemarks}
+            multiline
+            numberOfLines={3}
+            editable={!readOnly}
+            style={[styles.textArea, readOnly ? styles.readonly : null]}
+          />
 
-        {/* Physical verification */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Physical verification</Text>
-          <Text style={styles.hint}>Enter received quantity, condition, batch/lot, storage location. Stock is not updated by you.</Text>
-          {productRows.map((p, index) => (
-            <View key={index} style={styles.productBlock}>
-              <Text style={styles.productName}>{p.product} (requested: {p.returnQty})</Text>
-              <View style={styles.row}>
-                <Text style={styles.label}>Received Qty</Text>
-                <WebInput
-                  style={styles.input}
-                  value={p.receivedQty}
-                  onChangeText={(v) => /^\d*$/.test(v) && updateProduct(index, 'receivedQty', v)}
-                  keyboardType="numeric"
-                  placeholder="0"
-                  editable={canEdit}
-                />
-              </View>
-              <View style={styles.pickerWrap}>
-                <Text style={styles.label}>Condition</Text>
-                <Picker
-                  selectedValue={p.condition}
-                  onValueChange={(v) => updateProduct(index, 'condition', v)}
-                  style={styles.picker}
-                  enabled={canEdit}
-                  prompt="Condition"
-                >
-                  <Picker.Item label="Select" value="" />
-                  {CONDITION_OPTIONS.map((c) => (
-                    <Picker.Item key={c} label={c} value={c} />
-                  ))}
-                </Picker>
-              </View>
-              <Text style={styles.label}>Batch / Lot</Text>
-              <WebInput
-                style={styles.input}
-                value={p.batchLot}
-                onChangeText={(v) => updateProduct(index, 'batchLot', v)}
-                placeholder="Optional"
-                editable={canEdit}
-              />
-              <Text style={styles.label}>Storage location</Text>
-              <WebInput
-                style={styles.input}
-                value={p.storageLocation}
-                onChangeText={(v) => updateProduct(index, 'storageLocation', v)}
-                placeholder="Optional"
-                editable={canEdit}
-              />
-              {isQuantityMismatch(p.returnQty, p.receivedQty) && (
-                <>
-                  <Text style={styles.mismatchLabel}>Quantity mismatch — remark required</Text>
-                  <WebInput
-                    style={[styles.input, styles.textArea]}
-                    value={p.mismatchRemark}
-                    onChangeText={(v) => updateProduct(index, 'mismatchRemark', v)}
-                    placeholder="Explain difference"
-                    multiline
-                    editable={canEdit}
-                  />
-                </>
-              )}
-            </View>
-          ))}
-        </View>
+          <Text style={styles.instruction}>
+            Enter Received Qty — the actual quantity counted when stock arrives at the warehouse.
+          </Text>
 
-        {/* Warehouse evidence */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Warehouse photos (optional)</Text>
-          {canEdit && (
-            <TouchableOpacity style={styles.photoButton} onPress={addWarehousePhoto} disabled={uploadingPhoto}>
-              {uploadingPhoto ? <ActivityIndicator color={colors.primary} /> : <Text style={styles.photoButtonText}>+ Add photo</Text>}
-            </TouchableOpacity>
-          )}
-          {warehousePhotos.length > 0 && (
-            <ScrollView horizontal style={styles.photoRow}>
-              {warehousePhotos.map((url, i) => (
-                <View key={i} style={styles.photoWrap}>
-                  <Image source={{ uri: url }} style={styles.photoThumb} />
-                  {canEdit && (
-                    <TouchableOpacity style={styles.photoRemove} onPress={() => removeWarehousePhoto(i)}>
-                      <Text style={styles.photoRemoveText}>×</Text>
-                    </TouchableOpacity>
-                  )}
+          {lines.length === 0 ? (
+            <Text style={styles.emptyProducts}>No products on this return.</Text>
+          ) : (
+            <View style={styles.productList}>
+              {lines.map((line) => (
+                <View key={line.id} style={styles.productCard}>
+                  <Text style={styles.productName}>{line.productLabel || line.productRaw || '—'}</Text>
+                  <View style={styles.productFields}>
+                    <View style={styles.receivedField}>
+                      <Text style={styles.fieldLabel}>Received Qty *</Text>
+                      <WebInput
+                        value={canEdit ? (line.qty === 0 ? '' : String(line.qty)) : String(line.qty)}
+                        onChangeText={(v) => updateLineQty(line.id, v)}
+                        keyboardType="number-pad"
+                        placeholder={canEdit ? 'Enter count' : ''}
+                        editable={canEdit}
+                        style={canEdit ? styles.qtyInput : styles.readonly}
+                      />
+                    </View>
+                    <View style={styles.conditionField}>
+                      <Text style={styles.fieldLabel}>Product Condition *</Text>
+                    <WebSelect
+                      value={line.condition}
+                      onValueChange={(value) => updateLineCondition(line.id, value)}
+                      placeholder="Select condition"
+                      disabled={!canEdit}
+                      compact
+                      items={[
+                        { label: 'Sellable', value: 'Sellable' },
+                        { label: 'Damaged', value: 'Damaged' },
+                        { label: 'Expired', value: 'Expired' },
+                        { label: 'QC / Hold', value: 'QC / Hold' },
+                      ]}
+                    />
+                  </View>
+                  </View>
                 </View>
               ))}
-            </ScrollView>
+            </View>
           )}
         </View>
 
-        {canEdit && (
-          <View style={styles.section}>
-            <TouchableOpacity
-              style={[styles.submitButton, (!canSubmit || (hasAnyMismatch && !canSubmitWithMismatch)) && styles.submitButtonDisabled]}
-              onPress={handleSubmit}
-              disabled={submitting || !canSubmit || (hasAnyMismatch && !canSubmitWithMismatch)}
-            >
-              {submitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.submitButtonText}>
-                  {hasAnyMismatch ? 'Send for manager review' : 'Mark as received'}
-                </Text>
-              )}
-            </TouchableOpacity>
-            {hasAnyMismatch && (
-              <Text style={styles.hint}>Mismatch will be flagged; manager approval required. Add remark for each mismatched line.</Text>
-            )}
-          </View>
-        )}
-
-        {!canEdit && (
-          <View style={styles.section}>
-            <Text style={styles.readOnlyValue}>Status: {returnDoc.status}</Text>
-          </View>
-        )}
+        <View style={styles.footer}>
+          <WebButton
+            title="Back to list"
+            variant="outline"
+            onPress={() => navigation.navigate('ReturnsWarehouseExecutive')}
+          />
+          {!readOnly ? (
+            <>
+              <WebButton
+                title={saving ? 'Saving…' : 'Save'}
+                variant="outline"
+                onPress={handleSave}
+                disabled={saving || submitting}
+                loading={saving}
+              />
+              <WebButton
+                title={submitting ? 'Submitting…' : 'Submit to Warehouse Manager'}
+                onPress={handleSubmitToAdmin}
+                disabled={saving || submitting}
+                loading={submitting}
+              />
+            </>
+          ) : null}
+        </View>
       </ScrollView>
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
   loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 16, borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h3, color: colors.textLight, flex: 1, textAlign: 'center' },
   content: { flex: 1 },
-  contentContainer: { padding: 16, paddingBottom: 40 },
-  section: { marginBottom: 24 },
-  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
-  readOnlyLabel: { ...typography.body.small, color: colors.textSecondary, marginBottom: 4 },
-  readOnlyValue: { ...typography.body.medium, color: colors.textPrimary, marginBottom: 8 },
-  readOnlySmall: { ...typography.body.small, color: colors.textTertiary, marginBottom: 4 },
-  readOnlyRow: { marginBottom: 8 },
-  hint: { ...typography.body.small, color: colors.textSecondary, marginBottom: 12 },
-  productBlock: { backgroundColor: colors.backgroundLight, borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  productName: { ...typography.body.medium, fontWeight: '600', color: colors.textPrimary, marginBottom: 8 },
-  row: { marginBottom: 8 },
-  label: { ...typography.body.small, color: colors.textSecondary, marginBottom: 4 },
-  input: { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 10, ...typography.body.medium, color: colors.textPrimary },
-  textArea: { minHeight: 60, textAlignVertical: 'top' },
-  pickerWrap: { marginBottom: 8 },
-  picker: { height: 44 },
-  mismatchLabel: { ...typography.body.small, color: colors.warning, marginTop: 8, marginBottom: 4 },
-  photoButton: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 8 },
-  photoButtonText: { ...typography.body.medium, color: colors.primary },
-  photoRow: { flexDirection: 'row', marginTop: 8 },
-  photoWrap: { marginRight: 12, position: 'relative' },
-  photoThumb: { width: 80, height: 80, borderRadius: 8 },
-  photoRemove: { position: 'absolute', top: 4, right: 4, backgroundColor: colors.error, width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
-  photoRemoveText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  submitButton: { backgroundColor: colors.primary, padding: 16, borderRadius: 12, alignItems: 'center' },
-  submitButtonDisabled: { opacity: 0.6 },
-  submitButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
+  contentContainer: { padding: 16, paddingBottom: 40, gap: 12 },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    gap: 6,
+  },
+  sectionTitle: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    marginBottom: 8,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  readonly: {
+    backgroundColor: '#F8FAFC',
+    color: '#0F172A',
+  },
+  textArea: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  readOnlyBanner: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  readOnlyBannerText: {
+    fontSize: 13,
+    color: '#78350F',
+    lineHeight: 18,
+  },
+  helpText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginTop: -2,
+    marginBottom: 6,
+  },
+  instruction: {
+    ...typography.body.small,
+    color: colors.textSecondary,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  emptyProducts: {
+    textAlign: 'center',
+    color: colors.textSecondary,
+    paddingVertical: 16,
+  },
+  productList: { gap: 10 },
+  productCard: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 10, padding: 12, backgroundColor: '#F8FAFC' },
+  productName: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '700', marginBottom: 10 },
+  productFields: { flexDirection: 'row', gap: 10 },
+  receivedField: { width: '34%' },
+  conditionField: { flex: 1 },
+  fieldLabel: { ...typography.label.small, color: colors.textSecondary, marginBottom: 5 },
+  qtyInput: {
+    borderColor: '#059669',
+    backgroundColor: '#FFFFFF',
+  },
+  footer: {
+    gap: 10,
+    marginTop: 4,
+  },
 });

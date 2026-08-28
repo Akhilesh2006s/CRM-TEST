@@ -260,6 +260,11 @@ export default function ReportsLeadsOpenScreen() {
       const to = new Date(`${toDate}T23:59:59`);
       filtered = filtered.filter((l) => l.createdAt && new Date(l.createdAt) <= to);
     }
+    filtered.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
     setLeads(filtered);
   };
 

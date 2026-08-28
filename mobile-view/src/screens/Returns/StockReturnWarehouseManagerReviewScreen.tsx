@@ -1,330 +1,502 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
   ScrollView,
-  TextInput,
   Alert,
   ActivityIndicator,
-  Image,
 } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
 
+type ProductLine = {
+  id: string;
+  product: string;
+  productName: string;
+  soldQty: number;
+  fieldExecQty: number;
+  warehouseExecQty: number;
+  condition: string;
+  reason: string;
+  mismatchRemark: string;
+  managerDecision: string;
+  approvedQty: number;
+  stockBucket: string;
+  managerRemark: string;
+};
+
+type ReturnDetail = {
+  _id: string;
+  returnId?: string;
+  returnNumber?: number;
+  status?: string;
+  executiveName?: string;
+  customerName?: string;
+  schoolCode?: string;
+  returnDate?: string;
+  lrNumber?: string;
+  finYear?: string;
+  remarks?: string;
+  executiveRemarks?: string;
+  whReturnRemarks?: string;
+  verifiedBy?: { name?: string };
+  approvedBy?: { name?: string };
+  managerRemarks?: string;
+  rejectionReason?: string;
+  approvedAt?: string;
+  dcOrderId?: { school_name?: string; school_code?: string };
+  products?: Array<{
+    product: string;
+    level?: string;
+    soldQty: number;
+    returnQty: number;
+    receivedQty?: number;
+    condition?: string;
+    reason?: string;
+    mismatchRemark?: string;
+    quantityMismatch?: boolean;
+    managerDecision?: string;
+    approvedQty?: number;
+    stockBucket?: string;
+    managerRemark?: string;
+  }>;
+};
+
 const DECISION_OPTIONS = ['Approve', 'Partial Approve', 'Reject', 'Send Back'];
-const STOCK_BUCKET_OPTIONS = ['Sellable', 'Damaged', 'Expired', 'QC / Hold'];
+const STOCK_BUCKETS = ['Sellable', 'Damaged', 'Expired', 'QC / Hold'];
+
+function canDecide(status?: string) {
+  return status === 'Received' || status === 'Pending Manager Approval';
+}
+
+function qtyDiff(field: number, wh: number) {
+  if (field === wh) return null;
+  return wh - field;
+}
+
+function InfoPair({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoPair}>
+      <Text style={styles.infoPairLabel}>{label}</Text>
+      <Text style={styles.infoPairValue}>{value}</Text>
+    </View>
+  );
+}
 
 export default function StockReturnWarehouseManagerReviewScreen({ navigation, route }: any) {
   const returnId = route?.params?.returnId as string;
+
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [returnDoc, setReturnDoc] = useState<any>(null);
-  const [productDecisions, setProductDecisions] = useState<Array<{
-    product: string;
-    returnQty: number;
-    receivedQty: number;
-    condition?: string;
-    managerDecision: string;
-    approvedQty: string;
-    stockBucket: string;
-    managerRemark: string;
-  }>>([]);
+  const [processing, setProcessing] = useState(false);
+  const [detail, setDetail] = useState<ReturnDetail | null>(null);
+  const [lines, setLines] = useState<ProductLine[]>([]);
   const [managerRemarks, setManagerRemarks] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
 
-  useEffect(() => {
+  const readOnly = detail ? !canDecide(detail.status) : true;
+
+  const loadDetail = useCallback(async () => {
     if (!returnId) return;
-    (async () => {
-      try {
-        setLoading(true);
-        const doc = await apiService.get(`/stock-returns/warehouse-manager/${returnId}`);
-        setReturnDoc(doc);
-        setManagerRemarks(doc.managerRemarks || '');
-        setRejectionReason(doc.rejectionReason || '');
-        setProductDecisions((doc.products || []).map((p: any) => ({
+    setLoading(true);
+    try {
+      const data = (await apiService.get(
+        `/stock-returns/warehouse-manager/${returnId}`,
+      )) as ReturnDetail;
+      setDetail(data);
+      setManagerRemarks(data.managerRemarks || '');
+      setRejectionReason(data.rejectionReason || '');
+      setLines(
+        (data.products || []).map((p, idx) => ({
+          id: `line-${idx}`,
           product: p.product || '',
-          returnQty: Number(p.returnQty) || 0,
-          receivedQty: Number(p.receivedQty) || 0,
-          condition: p.condition,
+          productName: p.level || '',
+          soldQty: Number(p.soldQty) || 0,
+          fieldExecQty: Number(p.returnQty) || 0,
+          warehouseExecQty: Number(p.receivedQty) || 0,
+          condition: p.condition || '',
+          reason: p.reason || '',
+          mismatchRemark: p.mismatchRemark || '',
           managerDecision: p.managerDecision || '',
-          approvedQty: String(p.approvedQty ?? (p.managerDecision === 'Approve' ? p.receivedQty : p.managerDecision === 'Partial Approve' ? '' : '0')),
+          approvedQty: Number(p.approvedQty) || 0,
           stockBucket: p.stockBucket || '',
           managerRemark: p.managerRemark || '',
-        })));
-      } catch (e: any) {
-        Alert.alert('Error', e.message || 'Failed to load return');
-        navigation.goBack();
-      } finally {
-        setLoading(false);
-      }
-    })();
+        })),
+      );
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to load return', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   }, [returnId, navigation]);
 
-  const updateDecision = (index: number, field: string, value: string | number) => {
-    setProductDecisions((prev) => {
-      const next = [...prev];
-      const p = next[index];
-      if (!p) return prev;
-      (p as any)[field] = value;
-      if (field === 'managerDecision') {
-        if (value === 'Approve') {
-          p.approvedQty = String(p.receivedQty);
-          if (!p.stockBucket) p.stockBucket = 'Sellable';
-        } else if (value === 'Reject' || value === 'Send Back') {
-          p.approvedQty = '0';
-          p.stockBucket = '';
-        } else if (value === 'Partial Approve' && !p.approvedQty) p.approvedQty = '';
+  useEffect(() => {
+    loadDetail();
+  }, [loadDetail]);
+
+  const updateLine = (lineId: string, patch: Partial<ProductLine>) => {
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== lineId) return l;
+        const next = { ...l, ...patch };
+        if (patch.managerDecision === 'Approve') {
+          next.approvedQty = next.warehouseExecQty;
+        }
+        if (patch.managerDecision === 'Reject' || patch.managerDecision === 'Send Back') {
+          next.approvedQty = 0;
+          next.stockBucket = '';
+        }
+        if (patch.approvedQty != null && next.approvedQty > next.warehouseExecQty) {
+          Alert.alert('Validation', 'Approved qty cannot exceed warehouse received qty');
+          return l;
+        }
+        return next;
+      }),
+    );
+  };
+
+  const validateLines = (): boolean => {
+    const withDecision = lines.filter((l) => l.managerDecision);
+    if (withDecision.length === 0) {
+      Alert.alert('Validation', 'Set a decision for at least one product line');
+      return false;
+    }
+    for (const l of withDecision) {
+      if (l.managerDecision === 'Approve' || l.managerDecision === 'Partial Approve') {
+        if (l.approvedQty <= 0) {
+          Alert.alert('Validation', `Approved qty required for ${l.product}`);
+          return false;
+        }
+        if (!l.stockBucket) {
+          Alert.alert('Validation', `Stock bucket required for ${l.product}`);
+          return false;
+        }
+        if (l.managerDecision === 'Partial Approve' && !l.managerRemark.trim()) {
+          Alert.alert('Validation', `Remark required for partial approval on ${l.product}`);
+          return false;
+        }
       }
-      return next;
-    });
+      if (
+        (l.managerDecision === 'Reject' || l.managerDecision === 'Send Back') &&
+        !l.managerRemark.trim()
+      ) {
+        Alert.alert('Validation', `Remark required for ${l.product}`);
+        return false;
+      }
+    }
+    return true;
   };
 
-  const canApprove = productDecisions.length > 0 && productDecisions.every((p) => {
-    if (p.managerDecision === 'Approve' || p.managerDecision === 'Partial Approve') {
-      const q = parseInt(p.approvedQty, 10);
-      return p.stockBucket && !isNaN(q) && q > 0 && q <= p.receivedQty;
-    }
-    if (p.managerDecision === 'Reject' || p.managerDecision === 'Send Back') return true;
-    return false;
-  });
-  const allDecided = productDecisions.length > 0 && productDecisions.every((p) => p.managerDecision);
+  const buildProductPayload = () =>
+    lines.map((l) => ({
+      product: l.product,
+      managerDecision: l.managerDecision,
+      approvedQty: l.approvedQty,
+      stockBucket: l.stockBucket,
+      managerRemark: l.managerRemark,
+    }));
 
-  const submitAction = async (action: 'approve' | 'reject' | 'send_back') => {
-    if (action === 'reject' && !rejectionReason.trim()) {
-      Alert.alert('Validation', 'Please enter rejection reason.');
-      return;
-    }
-    if (action === 'approve' && (!allDecided || !canApprove)) {
-      Alert.alert('Validation', 'Set decision, approved qty and stock bucket for each product. Approved/Partial must have qty ≤ received.');
-      return;
-    }
-    setSubmitting(true);
+  const runAction = async (action: string, extra: Record<string, unknown> = {}) => {
+    if (!detail) return;
+    setProcessing(true);
     try {
-      const products = productDecisions.map((p) => ({
-        product: p.product,
-        managerDecision: p.managerDecision,
-        approvedQty: (p.managerDecision === 'Approve' || p.managerDecision === 'Partial Approve') ? (parseInt(p.approvedQty, 10) || 0) : 0,
-        stockBucket: (p.managerDecision === 'Approve' || p.managerDecision === 'Partial Approve') ? p.stockBucket : '',
-        managerRemark: p.managerRemark || '',
-      }));
-      await apiService.put(`/stock-returns/${returnId}/manager-action`, {
+      await apiService.put(`/stock-returns/${detail._id}/manager-action`, {
         action,
-        products,
-        managerRemarks: managerRemarks.trim() || undefined,
-        rejectionReason: action === 'reject' ? (rejectionReason.trim() || managerRemarks) : undefined,
+        products: buildProductPayload(),
+        managerRemarks,
+        ...extra,
       });
-      if (action === 'approve') Alert.alert('Done', 'Return approved. Stock updated.');
-      else if (action === 'reject') Alert.alert('Done', 'Return rejected.');
-      else Alert.alert('Done', 'Sent back to warehouse for re-verification.');
-      navigation.goBack();
+      const hasPartialApproval = lines.some((line) => line.managerDecision === 'Partial Approve');
+      const message =
+        action === 'approve'
+          ? `Return ${hasPartialApproval ? 'partially approved' : 'approved'} successfully. Stock has been updated for the approved quantities.`
+          : action === 'reject'
+            ? 'Return rejected'
+            : 'Return sent back to warehouse executive';
+      Alert.alert(action === 'approve' ? 'Success' : 'Done', message, [
+        { text: 'OK', onPress: () => navigation.navigate('ReturnsWarehouseManager') },
+      ]);
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to submit');
+      Alert.alert('Error', e.message || 'Action failed');
     } finally {
-      setSubmitting(false);
+      setProcessing(false);
     }
   };
 
-  const totalApprovedValue = 0; // Optional: could fetch Warehouse unitPrice by product and sum
-  const writeOffAmount = 0;
-  const returnToVendorAmount = 0;
+  const handleApprove = () => {
+    if (!validateLines()) return;
+    runAction('approve');
+  };
 
-  if (loading || !returnDoc) {
+  const handleRejectAll = () => {
+    if (!rejectionReason.trim()) {
+      Alert.alert('Validation', 'Enter rejection reason');
+      return;
+    }
+    runAction('reject', { rejectionReason });
+  };
+
+  const handleSendBack = () => {
+    if (!validateLines()) return;
+    runAction('send_back');
+  };
+
+  const mismatchCount = useMemo(
+    () => lines.filter((l) => qtyDiff(l.fieldExecQty, l.warehouseExecQty) !== null).length,
+    [lines],
+  );
+
+  if (loading || !detail) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={styles.loadingText}>Loading...</Text>
+        <Text style={styles.loadingText}>Loading return review…</Text>
       </View>
     );
   }
 
-  const products = returnDoc.products || [];
+  const schoolName =
+    (detail.dcOrderId && typeof detail.dcOrderId === 'object'
+      ? detail.dcOrderId.school_name
+      : null) ||
+    detail.customerName ||
+    '-';
+  const schoolCode =
+    detail.schoolCode ||
+    (detail.dcOrderId && typeof detail.dcOrderId === 'object'
+      ? detail.dcOrderId.school_code
+      : null) ||
+    '—';
 
   return (
     <ScreenShell
-      title="Review return"
-      loading={loading}
+      title="Return Review"
+      subtitle={`Return No. ${detail.returnNumber ?? detail.returnId} · ${schoolName}${
+        readOnly ? ` (${detail.status} — view only)` : ''
+      }`}
+      loading={false}
+      noScroll
     >
-<ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        {/* Read-only: Executive request */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Executive request (read-only)</Text>
-          <Text style={styles.readOnlyLabel}>Return ID</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.returnId || returnDoc._id}</Text>
-          <Text style={styles.readOnlyLabel}>Customer</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.customerName || '—'}</Text>
-          <Text style={styles.readOnlyLabel}>Invoice / Sale ID</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.saleId || '—'}</Text>
-          <Text style={styles.readOnlyLabel}>Executive remarks</Text>
-          <Text style={styles.readOnlyValue}>{returnDoc.executiveRemarks || '—'}</Text>
-          <Text style={styles.readOnlyLabel}>Products requested</Text>
-          {products.map((p: any, i: number) => (
-            <Text key={i} style={styles.readOnlySmall}>{p.product} — Qty: {p.returnQty}, Reason: {p.reason || '—'}</Text>
-          ))}
-        </View>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.rolesLine}>
+          Field Executive: {detail.executiveName || '—'} · Warehouse Executive:{' '}
+          {detail.verifiedBy?.name || '—'}
+        </Text>
 
-        {/* Read-only: Warehouse verification */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Warehouse verification (read-only)</Text>
-          {products.map((p: any, i: number) => (
-            <View key={i} style={styles.readOnlyBlock}>
-              <Text style={styles.readOnlyValue}>{p.product}: Received {p.receivedQty}, Condition: {p.condition || '—'}</Text>
-              {p.batchLot && <Text style={styles.readOnlySmall}>Batch: {p.batchLot}</Text>}
-              {p.quantityMismatch && <Text style={styles.warningText}>Mismatch: {p.mismatchRemark || '—'}</Text>}
-            </View>
-          ))}
-        </View>
-
-        {/* Photos */}
-        {((returnDoc.evidencePhotos && returnDoc.evidencePhotos.length) || (returnDoc.warehousePhotos && returnDoc.warehousePhotos.length)) > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Photos</Text>
-            {returnDoc.evidencePhotos && returnDoc.evidencePhotos.length > 0 && (
-              <>
-                <Text style={styles.readOnlyLabel}>Executive photos</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
-                  {returnDoc.evidencePhotos.map((url: string, i: number) => (
-                    <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
-                  ))}
-                </ScrollView>
-              </>
-            )}
-            {returnDoc.warehousePhotos && returnDoc.warehousePhotos.length > 0 && (
-              <>
-                <Text style={styles.readOnlyLabel}>Warehouse photos</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
-                  {returnDoc.warehousePhotos.map((url: string, i: number) => (
-                    <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
-                  ))}
-                </ScrollView>
-              </>
-            )}
+        {mismatchCount > 0 ? (
+          <View style={styles.mismatchBanner}>
+            <Ionicons name="warning-outline" size={18} color="#92400E" />
+            <Text style={styles.mismatchBannerText}>
+              {mismatchCount} line(s) have different Field Executive vs Warehouse Executive
+              quantities. Review carefully before approving.
+            </Text>
           </View>
-        )}
+        ) : null}
 
-        {/* Decision per product */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Decision per product</Text>
-          {productDecisions.map((p, index) => (
-            <View key={index} style={styles.decisionBlock}>
-              <Text style={styles.productName}>{p.product} (received: {p.receivedQty})</Text>
-              <Text style={styles.label}>Decision</Text>
-              <View style={styles.pickerWrap}>
-                <Picker
-                  selectedValue={p.managerDecision}
-                  onValueChange={(v) => updateDecision(index, 'managerDecision', v)}
-                  style={styles.picker}
-                  prompt="Decision"
-                >
-                  <Picker.Item label="Select" value="" />
-                  {DECISION_OPTIONS.map((d) => (
-                    <Picker.Item key={d} label={d} value={d} />
-                  ))}
-                </Picker>
-              </View>
-              {(p.managerDecision === 'Approve' || p.managerDecision === 'Partial Approve') && (
-                <>
-                  <Text style={styles.label}>Approved qty (≤ {p.receivedQty})</Text>
-                  <WebInput
-                    style={styles.input}
-                    value={p.approvedQty}
-                    onChangeText={(v) => /^\d*$/.test(v) && updateDecision(index, 'approvedQty', v)}
-                    keyboardType="numeric"
-                    placeholder="0"
-                  />
-                  <Text style={styles.label}>Stock bucket</Text>
-                  <View style={styles.pickerWrap}>
-                    <Picker
-                      selectedValue={p.stockBucket}
-                      onValueChange={(v) => updateDecision(index, 'stockBucket', v)}
-                      style={styles.picker}
-                      prompt="Bucket"
-                    >
-                      <Picker.Item label="Select" value="" />
-                      {STOCK_BUCKET_OPTIONS.map((b) => (
-                        <Picker.Item key={b} label={b} value={b} />
-                      ))}
-                    </Picker>
-                  </View>
-                </>
-              )}
-              <Text style={styles.label}>Remark (optional)</Text>
-              <WebInput
-                style={styles.input}
-                value={p.managerRemark}
-                onChangeText={(v) => updateDecision(index, 'managerRemark', v)}
-                placeholder="Manager remark"
-              />
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Return summary</Text>
+          <View style={styles.summaryGrid}>
+            <InfoPair label="School" value={schoolName} />
+            <InfoPair label="School code" value={schoolCode} />
+            <InfoPair label="LR No" value={detail.lrNumber || '—'} />
+            <InfoPair label="Status" value={detail.status || '—'} />
+          </View>
+          {detail.executiveRemarks ? (
+            <InfoPair label="Field exec remarks" value={detail.executiveRemarks} />
+          ) : null}
+          {detail.whReturnRemarks ? (
+            <InfoPair label="Warehouse exec remarks" value={detail.whReturnRemarks} />
+          ) : null}
+          {detail.remarks ? (
+            <InfoPair label="Return remarks" value={detail.remarks} />
+          ) : null}
+          {detail.managerRemarks ? (
+            <InfoPair label="Manager remarks" value={detail.managerRemarks} />
+          ) : null}
+          {detail.rejectionReason ? (
+            <View style={styles.rejectionBox}>
+              <Text style={styles.rejectionLabel}>Rejection reason</Text>
+              <Text style={styles.rejectionValue}>{detail.rejectionReason}</Text>
             </View>
-          ))}
+          ) : null}
+          {detail.approvedBy?.name ? (
+            <Text style={styles.processedBy}>
+              Processed by {detail.approvedBy.name}
+              {detail.approvedAt
+                ? ` on ${new Date(detail.approvedAt).toLocaleString()}`
+                : ''}
+            </Text>
+          ) : null}
         </View>
 
-        {/* Manager remarks (general) */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Manager remarks</Text>
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>
+            Compare quantities — Field Executive vs Warehouse Executive
+          </Text>
+          <Text style={styles.hint}>
+            Approve full or partial per line, or reject individual lines. Use Reject entire return
+            to reject all.
+          </Text>
+
+          {lines.length === 0 ? (
+            <Text style={styles.emptyText}>No product lines</Text>
+          ) : (
+            lines.map((line) => {
+              const diff = qtyDiff(line.fieldExecQty, line.warehouseExecQty);
+              const mismatch = diff !== null && diff !== 0;
+              const decisionLocked =
+                readOnly ||
+                line.managerDecision === 'Reject' ||
+                line.managerDecision === 'Send Back';
+              return (
+                <View
+                  key={line.id}
+                  style={[styles.lineCard, mismatch && styles.lineCardMismatch]}
+                >
+                  <Text style={styles.lineProduct}>{line.product || '—'}</Text>
+                  <InfoPair label="Name" value={line.productName || '—'} />
+                  <InfoPair label="Sold" value={String(line.soldQty)} />
+
+                  <View style={styles.groupBlue}>
+                    <Text style={styles.groupTitle}>Field Executive</Text>
+                    <InfoPair label="Return Qty" value={String(line.fieldExecQty)} />
+                    <InfoPair label="Reason" value={line.reason || '—'} />
+                  </View>
+
+                  <View style={styles.groupOrange}>
+                    <Text style={styles.groupTitle}>Warehouse Executive</Text>
+                    <InfoPair label="Received Qty" value={String(line.warehouseExecQty)} />
+                    <InfoPair label="Condition" value={line.condition || '—'} />
+                    <InfoPair
+                      label="Diff"
+                      value={diff === null ? '—' : diff > 0 ? `+${diff}` : String(diff)}
+                    />
+                  </View>
+
+                  <View style={styles.groupGreen}>
+                    <Text style={styles.groupTitle}>Manager decision</Text>
+                    <WebLabel>Decision</WebLabel>
+                    <WebSelect
+                      placeholder="Decision"
+                      value={line.managerDecision}
+                      onValueChange={(v) => updateLine(line.id, { managerDecision: v })}
+                      items={DECISION_OPTIONS.map((d) => ({ label: d, value: d }))}
+                      disabled={readOnly}
+                    />
+                    <WebLabel>Approved Qty</WebLabel>
+                    <WebInput
+                      value={String(line.approvedQty || 0)}
+                      onChangeText={(v) => {
+                        const cleaned = v.replace(/\D/g, '');
+                        updateLine(line.id, {
+                          approvedQty: cleaned === '' ? 0 : Number(cleaned),
+                        });
+                      }}
+                      keyboardType="number-pad"
+                      editable={
+                        !readOnly &&
+                        !!line.managerDecision &&
+                        line.managerDecision !== 'Reject' &&
+                        line.managerDecision !== 'Send Back'
+                      }
+                      style={
+                        decisionLocked || !line.managerDecision
+                          ? styles.readonly
+                          : undefined
+                      }
+                    />
+                    <WebLabel>Bucket</WebLabel>
+                    <WebSelect
+                      placeholder="Bucket"
+                      value={line.stockBucket}
+                      onValueChange={(v) => updateLine(line.id, { stockBucket: v })}
+                      items={STOCK_BUCKETS.map((b) => ({ label: b, value: b }))}
+                      disabled={decisionLocked}
+                    />
+                    <WebLabel>Remark</WebLabel>
+                    <WebInput
+                      value={line.managerRemark}
+                      onChangeText={(v) => updateLine(line.id, { managerRemark: v })}
+                      placeholder="Remark"
+                      editable={!readOnly}
+                      style={readOnly ? styles.readonly : undefined}
+                    />
+                  </View>
+                </View>
+              );
+            })
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <WebLabel>Manager remarks</WebLabel>
           <WebInput
-            style={[styles.input, styles.textArea]}
             value={managerRemarks}
             onChangeText={setManagerRemarks}
-            placeholder="Overall remarks"
             multiline
+            numberOfLines={3}
+            editable={!readOnly}
+            style={[styles.textArea, readOnly ? styles.readonly : null]}
           />
+
+          {readOnly && detail.rejectionReason ? (
+            <View style={styles.rejectionBox}>
+              <Text style={styles.rejectionLabel}>Rejection reason</Text>
+              <Text style={styles.rejectionValue}>{detail.rejectionReason}</Text>
+            </View>
+          ) : !readOnly ? (
+            <>
+              <WebLabel>Rejection reason (for reject entire return)</WebLabel>
+              <WebInput
+                value={rejectionReason}
+                onChangeText={setRejectionReason}
+                multiline
+                numberOfLines={3}
+                placeholder="Required only when rejecting the full return"
+                style={styles.textArea}
+              />
+            </>
+          ) : null}
         </View>
 
-        {/* Financial impact (read-only placeholder) */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Impact (read-only)</Text>
-          <View style={styles.impactRow}>
-            <Text style={styles.readOnlyLabel}>Stock value impact</Text>
-            <Text style={styles.readOnlyValue}>{totalApprovedValue !== 0 ? `₹${totalApprovedValue}` : '—'}</Text>
-          </View>
-          <View style={styles.impactRow}>
-            <Text style={styles.readOnlyLabel}>Write-off amount</Text>
-            <Text style={styles.readOnlyValue}>{writeOffAmount !== 0 ? `₹${writeOffAmount}` : '—'}</Text>
-          </View>
-          <View style={styles.impactRow}>
-            <Text style={styles.readOnlyLabel}>Return-to-vendor (cost)</Text>
-            <Text style={styles.readOnlyValue}>{returnToVendorAmount !== 0 ? `₹${returnToVendorAmount}` : '—'}</Text>
-          </View>
-        </View>
-
-        {/* Action buttons */}
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.approveButton]}
-            onPress={() => submitAction('approve')}
-            disabled={submitting || !canApprove || !allDecided}
-          >
-            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionButtonText}>Approve return</Text>}
-          </TouchableOpacity>
-          <Text style={styles.label}>Rejection reason (required for Reject)</Text>
-          <WebInput
-            style={[styles.input, styles.textArea]}
-            value={rejectionReason}
-            onChangeText={setRejectionReason}
-            placeholder="Reason for rejection"
-            multiline
+        <View style={styles.footer}>
+          <WebButton
+            title="Back to list"
+            variant="outline"
+            onPress={() => navigation.navigate('ReturnsWarehouseManager')}
           />
-          <TouchableOpacity
-            style={[styles.actionButton, styles.rejectButton]}
-            onPress={() => submitAction('reject')}
-            disabled={submitting}
-          >
-            <Text style={styles.actionButtonText}>Reject return</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.sendBackButton]}
-            onPress={() => submitAction('send_back')}
-            disabled={submitting}
-          >
-            <Text style={styles.actionButtonText}>Send back to warehouse</Text>
-          </TouchableOpacity>
-          <Text style={styles.hint}>Send back: return appears again in warehouse exec queue for re-verification.</Text>
+          {!readOnly ? (
+            <>
+              <WebButton
+                title="Send back to WH Exec"
+                variant="outline"
+                onPress={handleSendBack}
+                disabled={processing}
+              />
+              <WebButton
+                title="Reject entire return"
+                variant="destructive"
+                onPress={handleRejectAll}
+                disabled={processing}
+              />
+              <WebButton
+                title={processing ? 'Processing…' : 'Approve (full / partial)'}
+                onPress={handleApprove}
+                disabled={processing}
+                loading={processing}
+              />
+            </>
+          ) : null}
         </View>
       </ScrollView>
     </ScreenShell>
@@ -332,37 +504,147 @@ export default function StockReturnWarehouseManagerReviewScreen({ navigation, ro
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
   loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 16, borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h3, color: colors.textLight, flex: 1, textAlign: 'center' },
   content: { flex: 1 },
-  contentContainer: { padding: 16, paddingBottom: 40 },
-  section: { marginBottom: 24 },
-  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
-  readOnlyLabel: { ...typography.body.small, color: colors.textSecondary, marginBottom: 4 },
-  readOnlyValue: { ...typography.body.medium, color: colors.textPrimary, marginBottom: 8 },
-  readOnlySmall: { ...typography.body.small, color: colors.textTertiary, marginBottom: 4 },
-  readOnlyBlock: { backgroundColor: colors.backgroundLight, padding: 10, borderRadius: 8, marginBottom: 8 },
-  warningText: { ...typography.body.small, color: colors.warning, marginTop: 4 },
-  label: { ...typography.body.small, color: colors.textSecondary, marginBottom: 4 },
-  input: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 10, ...typography.body.medium, color: colors.textPrimary, marginBottom: 8 },
-  textArea: { minHeight: 80, textAlignVertical: 'top' },
-  pickerWrap: { marginBottom: 8 },
-  picker: { height: 44 },
-  productName: { ...typography.body.medium, fontWeight: '600', color: colors.textPrimary, marginBottom: 8 },
-  decisionBlock: { backgroundColor: colors.backgroundLight, borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  photoRow: { flexDirection: 'row', marginBottom: 8 },
-  photoThumb: { width: 80, height: 80, borderRadius: 8, marginRight: 8 },
-  impactRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border },
-  actionButton: { padding: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
-  approveButton: { backgroundColor: colors.success },
-  rejectButton: { backgroundColor: colors.error },
-  sendBackButton: { backgroundColor: colors.warning },
-  actionButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
-  hint: { ...typography.body.small, color: colors.textSecondary },
+  contentContainer: { padding: 16, paddingBottom: 40, gap: 12 },
+  rolesLine: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  mismatchBanner: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-start',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 10,
+    padding: 12,
+  },
+  mismatchBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#78350F',
+    lineHeight: 18,
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    gap: 8,
+  },
+  sectionTitle: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  hint: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  summaryGrid: {
+    gap: 8,
+  },
+  infoPair: {
+    marginBottom: 4,
+  },
+  infoPairLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  infoPairValue: {
+    ...typography.body.medium,
+    color: colors.textPrimary,
+    fontWeight: '600',
+  },
+  rejectionBox: {
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    backgroundColor: '#FEF2F2',
+    borderRadius: 8,
+    padding: 10,
+  },
+  rejectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  rejectionValue: {
+    marginTop: 4,
+    fontSize: 13,
+    color: '#7F1D1D',
+  },
+  processedBy: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    marginTop: 4,
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: colors.textSecondary,
+    paddingVertical: 16,
+  },
+  lineCard: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    gap: 6,
+  },
+  lineCardMismatch: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  lineProduct: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  groupBlue: {
+    backgroundColor: '#EFF6FF',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  groupOrange: {
+    backgroundColor: '#FFF7ED',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  groupGreen: {
+    backgroundColor: '#ECFDF5',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+    gap: 4,
+  },
+  groupTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  readonly: {
+    backgroundColor: '#F8FAFC',
+  },
+  textArea: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  footer: {
+    gap: 10,
+    marginTop: 4,
+  },
 });

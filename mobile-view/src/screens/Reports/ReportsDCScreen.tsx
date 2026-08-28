@@ -1,179 +1,131 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, RefreshControl, ActivityIndicator, Alert } from 'react-native';
+import { Alert, Platform, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebButton, WebInput, WebLabel, WebSelect } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { downloadDcReport } from '../../utils/downloadDcReport';
 
 interface DcItem {
   _id: string;
-  customerName?: string;
-  customerPhone?: string;
-  product?: string;
-  requestedQuantity?: number;
-  status?: string;
-  dcDate?: string;
-  createdAt?: string;
-  dcOrderId?: { school_name?: string; dc_code?: string };
+  customerName?: string; customerPhone?: string; customerAddress?: string; product?: string;
+  requestedQuantity?: number; availableQuantity?: number; deliverableQuantity?: number;
+  status?: string; dcDate?: string; createdAt?: string; lrNo?: string;
+  employeeId?: { name?: string }; productDetails?: Array<{ total?: number }>;
+  dcOrderId?: { school_name?: string; contact_mobile?: string; location?: string; zone?: string; dc_code?: string };
 }
 
-const statuses = ['all', 'created', 'pending_dc', 'warehouse_processing', 'completed', 'hold'];
+const statuses = ['all', 'created', 'po_submitted', 'sent_to_manager', 'pending_dc', 'warehouse_processing', 'completed', 'hold'];
+const dateRanges = ['all', 'today', 'week', 'month'];
+const displayStatus = (status?: string) => !status ? 'Pending' : status.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+const formatDate = (value?: string) => value ? new Date(value).toLocaleDateString('en-IN') : '—';
+const number = (value?: number) => Number(value || 0).toLocaleString('en-IN');
 
-export default function ReportsDCScreen({ navigation }: any) {
+function Detail({ label, value, emphasis }: { label: string; value: React.ReactNode; emphasis?: boolean }) {
+  return <View style={styles.detail}><Text style={styles.detailLabel}>{label}</Text><Text style={[styles.detailValue, emphasis && styles.detailValueStrong]} numberOfLines={2}>{value || '—'}</Text></View>;
+}
+
+function Metric({ label, value, tone, wide = false }: { label: string; value: string; tone: string; wide?: boolean }) {
+  const toneStyle: any = styles[`metric${tone[0].toUpperCase()}${tone.slice(1)}` as keyof typeof styles];
+  return <View style={[styles.metric, toneStyle, wide && styles.metricWide]}><Text style={styles.metricLabel}>{label}</Text><Text style={styles.metricValue}>{value}</Text></View>;
+}
+
+export default function ReportsDCScreen() {
   const [items, setItems] = useState<DcItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
-  useEffect(() => {
-    loadDc();
-  }, []);
+  useEffect(() => { loadDc(); }, []);
 
   const loadDc = async () => {
     try {
       setLoading(true);
-      const data = await apiService.get<any>('/dc');
-      const entries = Array.isArray(data) ? data : data?.data || [];
-      setItems(entries);
+      const params = new URLSearchParams();
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (fromDate) params.set('fromDate', fromDate);
+      if (toDate) params.set('toDate', toDate);
+      const data = await apiService.get(`/dc${params.toString() ? `?${params}` : ''}`);
+      setItems(Array.isArray(data) ? data : data?.data || []);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load DC data');
-      setItems([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+      Alert.alert('Error', error.message || 'Failed to load DC data'); setItems([]);
+    } finally { setLoading(false); setRefreshing(false); }
   };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadDc();
-  };
-
-  const summary = useMemo(() => {
-    const total = items.length;
-    const completed = items.filter((dc) => dc.status === 'completed').length;
-    const pending = items.filter((dc) => dc.status !== 'completed' && dc.status !== 'hold').length;
-    const hold = items.filter((dc) => dc.status === 'hold').length;
-    return { total, completed, pending, hold };
-  }, [items]);
-
+  const onRefresh = () => { setRefreshing(true); loadDc(); };
   const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return items.filter((item) => {
-      const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
-      const matchesSearch =
-        !term ||
-        item.customerName?.toLowerCase().includes(term) ||
-        item.dcOrderId?.school_name?.toLowerCase().includes(term) ||
-        item.customerPhone?.includes(term) ||
-        item.dcOrderId?.dc_code?.toLowerCase().includes(term);
-      return matchesStatus && matchesSearch;
+    const term = search.trim().toLowerCase(); const today = new Date(); today.setHours(0, 0, 0, 0);
+    return items.filter((dc) => {
+      const dateValue = dc.dcDate || dc.createdAt; const date = dateValue ? new Date(dateValue) : undefined;
+      const inRange = !date || dateFilter === 'all' || (dateFilter === 'today' ? date >= today : date >= new Date(today.getTime() - (dateFilter === 'week' ? 7 : 30) * 86400000));
+      const matchesSearch = !term || [dc.customerName, dc.customerPhone, dc.product, dc.dcOrderId?.school_name, dc.dcOrderId?.contact_mobile, dc.dcOrderId?.dc_code, dc.lrNo].some((value) => value?.toLowerCase().includes(term));
+      return (statusFilter === 'all' || dc.status === statusFilter) && inRange && matchesSearch;
     });
-  }, [items, statusFilter, search]);
+  }, [items, statusFilter, dateFilter, search]);
+  const summary = useMemo(() => ({
+    total: filtered.length, completed: filtered.filter((dc) => dc.status === 'completed').length,
+    pending: filtered.filter((dc) => ['created', 'po_submitted', 'sent_to_manager', 'pending_dc', 'warehouse_processing'].includes(dc.status || '')).length,
+    hold: filtered.filter((dc) => dc.status === 'hold').length,
+    quantity: filtered.reduce((total, dc) => total + (dc.deliverableQuantity || dc.requestedQuantity || 0), 0),
+    value: filtered.reduce((total, dc) => total + (dc.productDetails || []).reduce((sum, product) => sum + (product.total || 0), 0), 0),
+  }), [filtered]);
 
-  return (
-    <ScreenShell
-      title="DC Report"
-      loading={loading && !refreshing}
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-    >
-<View style={styles.summaryRow}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Total</Text>
-          <Text style={styles.summaryValue}>{summary.total}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Completed</Text>
-          <Text style={[styles.summaryValue, { color: colors.success }]}>{summary.completed}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Pending</Text>
-          <Text style={[styles.summaryValue, { color: colors.warning }]}>{summary.pending}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Hold</Text>
-          <Text style={[styles.summaryValue, { color: colors.error || '#ef4444' }]}>{summary.hold}</Text>
-        </View>
+  const handleExport = async () => {
+    try {
+      setExporting(true); const params = new URLSearchParams();
+      if (statusFilter !== 'all') params.set('status', statusFilter); if (fromDate) params.set('fromDate', fromDate); if (toDate) params.set('toDate', toDate);
+      await downloadDcReport(params.toString()); if (Platform.OS === 'web') Alert.alert('Success', 'Excel file downloaded successfully.');
+    } catch (error: any) { Alert.alert('Export failed', error.message || 'Failed to export DC report'); } finally { setExporting(false); }
+  };
+
+  return <ScreenShell title="DC Report" loading={loading && !refreshing} refreshing={refreshing} onRefresh={onRefresh}>
+    <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+      <Text style={styles.subtitle}>View and manage delivery challans</Text>
+      <WebButton title={exporting ? 'Exporting…' : 'Export to Excel'} onPress={handleExport} loading={exporting} />
+      <View style={styles.metricsGrid}>
+        <Metric label="Total DCs" value={number(summary.total)} tone="blue" /><Metric label="Completed" value={number(summary.completed)} tone="green" />
+        <Metric label="Pending" value={number(summary.pending)} tone="yellow" /><Metric label="On Hold" value={number(summary.hold)} tone="red" />
+        <Metric label="Total Quantity" value={number(summary.quantity)} tone="purple" wide /><Metric label="Total Value" value={`₹${number(summary.value)}`} tone="sky" wide />
       </View>
-      <View style={styles.filters}>
-        <WebInput
-          style={styles.searchInput}
-          placeholder="Search DC by school, contact, or code" value={search}
-          onChangeText={setSearch}
-        />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
-          {statuses.map((status) => (
-            <TouchableOpacity
-              key={status}
-              style={[styles.filterChip, statusFilter === status && styles.filterChipActive]}
-              onPress={() => setStatusFilter(status)}
-            >
-              <Text style={[styles.filterChipText, statusFilter === status && styles.filterChipTextActive]}>
-                {status === 'all' ? 'All' : status}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+      <View style={styles.filterCard}>
+        <WebLabel>Search DCs</WebLabel><WebInput value={search} onChangeText={setSearch} placeholder="School, contact, code, product, or LR No" />
+        <WebLabel>Status</WebLabel><WebSelect value={statusFilter} onValueChange={setStatusFilter} items={statuses.map((status) => ({ label: status === 'all' ? 'All Status' : displayStatus(status), value: status }))} />
+        <WebLabel>Time</WebLabel><WebSelect value={dateFilter} onValueChange={setDateFilter} items={dateRanges.map((range) => ({ label: range === 'all' ? 'All Time' : range === 'week' ? 'Last 7 Days' : range === 'month' ? 'Last 30 Days' : 'Today', value: range }))} />
+        <WebLabel>DC From</WebLabel><WebInput value={fromDate} onChangeText={setFromDate} placeholder="YYYY-MM-DD" {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})} />
+        <WebLabel>DC To</WebLabel><WebInput value={toDate} onChangeText={setToDate} placeholder="YYYY-MM-DD" {...(Platform.OS === 'web' ? ({ type: 'date' } as any) : {})} />
+        <WebButton title="Search" onPress={loadDc} loading={loading} />
       </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {filtered.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📦</Text>
-            <Text style={styles.emptyText}>No DC records found</Text>
+      <Text style={styles.sectionTitle}>Delivery Challans ({filtered.length})</Text>
+      {filtered.length === 0 ? <View style={styles.empty}><Text style={styles.emptyText}>No DC records found</Text></View> : filtered.map((dc, index) => {
+        const school = dc.dcOrderId?.school_name || dc.customerName || 'DC'; const contact = dc.dcOrderId?.contact_mobile || dc.customerPhone; const location = dc.dcOrderId?.location || dc.dcOrderId?.zone || dc.customerAddress;
+        return <View key={dc._id} style={styles.card}>
+          <View style={styles.cardHeader}><View style={styles.titleWrap}><Text style={styles.serial}>#{index + 1}</Text><Text style={styles.dcTitle}>{school}</Text></View><Text style={[styles.badge, dc.status === 'completed' && styles.badgeCompleted, dc.status === 'hold' && styles.badgeHold]}>{displayStatus(dc.status)}</Text></View>
+          <View style={styles.detailsGrid}>
+            <Detail label="DC Code" value={dc.dcOrderId?.dc_code} emphasis /><Detail label="DC Date" value={formatDate(dc.dcDate || dc.createdAt)} />
+            <Detail label="Contact" value={contact} /><Detail label="Location" value={location} />
+            <Detail label="Product" value={dc.product} emphasis /><Detail label="Employee" value={dc.employeeId?.name} />
+            <Detail label="Requested Qty" value={number(dc.requestedQuantity)} /><Detail label="Available Qty" value={number(dc.availableQuantity)} />
+            <Detail label="Deliverable Qty" value={number(dc.deliverableQuantity)} emphasis /><Detail label="LR No" value={dc.lrNo} />
           </View>
-        ) : (
-          filtered.map((dc) => (
-            <View key={dc._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.dcTitle}>{dc.dcOrderId?.school_name || dc.customerName || 'DC'}</Text>
-                <Text style={styles.badge}>{dc.status || 'Pending'}</Text>
-              </View>
-              <Text style={styles.infoLine}>DC Code: {dc.dcOrderId?.dc_code || '-'}</Text>
-              <Text style={styles.infoLine}>Contact: {dc.customerPhone || '-'}</Text>
-              <Text style={styles.infoLine}>Product: {dc.product || '-'}</Text>
-              <Text style={styles.infoLine}>Quantity: {dc.requestedQuantity ?? 0}</Text>
-              <Text style={styles.infoLine}>Date: {dc.dcDate ? new Date(dc.dcDate).toLocaleDateString('en-IN') : '-'}</Text>
-            </View>
-          ))
-        )}
-      </ScrollView>
-    </ScreenShell>
-  );
+        </View>;
+      })}
+    </ScrollView>
+  </ScreenShell>;
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 10 },
-  summaryCard: { flex: 1, minWidth: 140, padding: 12, borderRadius: 12, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border },
-  summaryLabel: { ...typography.label.medium, color: colors.textSecondary },
-  summaryValue: { ...typography.heading.h3, color: colors.textPrimary },
-  filters: { paddingHorizontal: 16, paddingBottom: 12 },
-  searchInput: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, color: colors.textPrimary },
-  filterScroll: { marginTop: 10 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
-  filterChipActive: { backgroundColor: colors.primary + '20', borderColor: colors.primary },
-  filterChipText: { ...typography.body.medium, color: colors.textPrimary },
-  filterChipTextActive: { color: colors.primary, fontWeight: '600' },
-  content: { flex: 1, paddingHorizontal: 16 },
-  emptyContainer: { alignItems: 'center', marginTop: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 12 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  dcTitle: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  badge: { ...typography.label.small, color: colors.primary, borderWidth: 1, borderColor: colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  infoLine: { ...typography.body.medium, color: colors.textSecondary, marginTop: 4 },
+  content: { flex: 1 }, contentContainer: { padding: 16, paddingBottom: 32 }, subtitle: { ...typography.body.medium, color: colors.textSecondary, marginBottom: 12 },
+  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginVertical: 16 }, metric: { width: '48%', padding: 14, borderRadius: 12, borderWidth: 1 }, metricWide: { width: '100%' },
+  metricBlue: { backgroundColor: '#eaf0ff', borderColor: '#c9d6ff' }, metricGreen: { backgroundColor: '#ecfdf3', borderColor: '#bbf7d0' }, metricYellow: { backgroundColor: '#fffbeb', borderColor: '#fde68a' }, metricRed: { backgroundColor: '#fef2f2', borderColor: '#fecaca' }, metricPurple: { backgroundColor: '#faf5ff', borderColor: '#e9d5ff' }, metricSky: { backgroundColor: '#eff6ff', borderColor: '#bfdbfe' },
+  metricLabel: { ...typography.label.medium, color: colors.textSecondary }, metricValue: { ...typography.heading.h3, color: colors.textPrimary, marginTop: 4 },
+  filterCard: { backgroundColor: colors.backgroundLight, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 8, marginBottom: 18 }, sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 }, empty: { padding: 30, alignItems: 'center' }, emptyText: { ...typography.body.medium, color: colors.textSecondary },
+  card: { backgroundColor: colors.backgroundLight, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 12 }, cardHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start', marginBottom: 12 }, titleWrap: { flex: 1, flexDirection: 'row', gap: 8, alignItems: 'center' }, serial: { ...typography.label.small, color: colors.textSecondary }, dcTitle: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
+  badge: { ...typography.label.small, color: '#475569', backgroundColor: '#f1f5f9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, overflow: 'hidden' }, badgeCompleted: { color: '#15803d', backgroundColor: '#dcfce7' }, badgeHold: { color: '#b91c1c', backgroundColor: '#fee2e2' },
+  detailsGrid: { flexDirection: 'row', flexWrap: 'wrap', borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8 }, detail: { width: '50%', paddingVertical: 7, paddingRight: 8 }, detailLabel: { ...typography.label.small, color: colors.textSecondary }, detailValue: { ...typography.body.medium, color: colors.textPrimary, marginTop: 2 }, detailValueStrong: { fontWeight: '700' },
 });
-
-
