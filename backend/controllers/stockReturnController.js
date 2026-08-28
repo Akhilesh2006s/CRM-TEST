@@ -710,6 +710,7 @@ const listWarehouseReturns = async (req, res) => {
       ],
     })
       .populate('createdBy', 'name email')
+      .populate('dcOrderId', 'dc_code')
       .sort({ createdAt: -1 });
     res.json(items);
   } catch (error) {
@@ -933,9 +934,14 @@ const managerAction = async (req, res) => {
         if (decision) {
           return {
             ...p.toObject ? p.toObject() : p,
-            managerDecision: decision.managerDecision,
+            // Reject-entire-return does not require a separate decision on every UI row.
+            managerDecision: action === 'reject' ? 'Reject' : (decision.managerDecision || undefined),
             approvedQty: decision.approvedQty || 0,
-            stockBucket: decision.stockBucket || '',
+            // Rejected/sent-back lines never enter stock, so no bucket should be stored.
+            stockBucket:
+              action === 'reject' || decision.managerDecision === 'Reject' || decision.managerDecision === 'Send Back'
+                ? undefined
+                : (decision.stockBucket || undefined),
             managerRemark: decision.managerRemark || '',
             mismatchRemark: decision.mismatchRemark || p.mismatchRemark || '',
           };
