@@ -240,7 +240,7 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       {
         title: 'Finance',
         items: [
-          { label: 'Finance Pending Expenses', screen: 'ExpenseFinancePending' },
+          { label: 'Finance Approved Exp List', screen: 'ExpenseFinancePending' },
           { label: 'Payments', screen: 'PaymentList' },
         ],
       },
@@ -354,10 +354,9 @@ export function getNavSections(user: CrmUser | null | undefined): NavSection[] {
       icon: I.expenses,
       items: [
         { label: 'Pending Expenses List', screen: 'ExpensePending', icon: '⏳' },
-        { label: 'Finance Pending Exp List', screen: 'ExpenseFinancePending', icon: '🏦' },
+        { label: 'Finance Approved Exp List', screen: 'ExpenseFinancePending', icon: '🏦' },
         { label: 'Create Expense', screen: 'ExpenseCreate', icon: '➕' },
         { label: 'My Expenses', screen: 'ExpenseMy', icon: '📄' },
-        { label: 'Executive Manager Pending', screen: 'ExpenseExecutiveManagerPending', icon: '👔' },
       ],
     },
     {

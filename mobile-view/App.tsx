@@ -49,6 +49,7 @@ import EmployeesActiveScreen from './src/screens/Employees/EmployeesActiveScreen
 import EmployeesInactiveScreen from './src/screens/Employees/EmployeesInactiveScreen';
 import EmployeesLeavesScreen from './src/screens/Employees/EmployeesLeavesScreen';
 import ExecutiveManagersScreen from './src/screens/ExecutiveManagers/ExecutiveManagersScreen';
+import ExecutiveManagerNewScreen from './src/screens/ExecutiveManagers/ExecutiveManagerNewScreen';
 import ExecutiveManagerDashboardScreen from './src/screens/ExecutiveManagers/ExecutiveManagerDashboardScreen';
 import ExecutiveManagerLeavesScreen from './src/screens/ExecutiveManagers/ExecutiveManagerLeavesScreen';
 import POChangeRequestsScreen from './src/screens/ExecutiveManagers/POChangeRequestsScreen';
@@ -272,6 +273,7 @@ function AuthenticatedStack() {
         
         {/* Executive Managers */}
         <Stack.Screen name="ExecutiveManagers" component={ExecutiveManagersScreen} />
+        <Stack.Screen name="ExecutiveManagerNew" component={ExecutiveManagerNewScreen} />
         <Stack.Screen name="ExecutiveManagerDashboard" component={ExecutiveManagerDashboardScreen} />
         <Stack.Screen name="ExecutiveManagerLeaves" component={ExecutiveManagerLeavesScreen} />
         <Stack.Screen name="POChangeRequests" component={POChangeRequestsScreen} />

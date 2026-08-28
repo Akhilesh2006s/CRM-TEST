@@ -1,63 +1,192 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, RefreshControl, Alert, ActivityIndicator } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  TouchableOpacity,
+  Linking,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
-import { apiService } from '../../services/api';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebSelect } from '../../ui/WebPrimitives';
+import { apiService, getApiUrl } from '../../services/api';
+
+type Training = {
+  _id: string;
+  schoolCode?: string;
+  schoolName?: string;
+  zone?: string;
+  town?: string;
+  subject?: string;
+  trainerId?: { _id: string; name?: string };
+  employeeId?: { _id: string; name?: string };
+  trainingDate?: string;
+  status?: 'Scheduled' | 'Completed' | 'Cancelled' | string;
+  poImageUrl?: string;
+  feedbackPdfUrl?: string;
+};
+
+type Filters = {
+  zone: string;
+  employeeId: string;
+  trainerId: string;
+  schoolCode: string;
+  schoolName: string;
+  fromDate: string;
+  toDate: string;
+};
+
+const emptyFilters: Filters = {
+  zone: '',
+  employeeId: '',
+  trainerId: '',
+  schoolCode: '',
+  schoolName: '',
+  fromDate: '',
+  toDate: '',
+};
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
+function statusStyle(status?: string) {
+  switch (status) {
+    case 'Completed':
+      return { bg: '#DCFCE7', fg: '#15803D' };
+    case 'Cancelled':
+      return { bg: '#FEE2E2', fg: '#B91C1C' };
+    case 'Scheduled':
+      return { bg: '#FEF9C3', fg: '#A16207' };
+    default:
+      return { bg: '#F1F5F9', fg: '#64748B' };
+  }
+}
 
 export default function TrainingListScreen({ navigation }: any) {
-  const [trainings, setTrainings] = useState<any[]>([]);
+  const [items, setItems] = useState<Training[]>([]);
+  const [zones, setZones] = useState<string[]>([]);
+  const [trainers, setTrainers] = useState<{ _id: string; name: string }[]>([]);
+  const [employees, setEmployees] = useState<{ _id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'Scheduled' | 'Completed' | 'Cancelled'>('all');
+  const [draftFilters, setDraftFilters] = useState<Filters>(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
 
-  useEffect(() => {
-    loadData();
-  }, [filter]);
+  const loadMeta = useCallback(async () => {
+    try {
+      const [zData, tData, eData] = await Promise.all([
+        apiService.get('/dc-orders').catch(() => []),
+        apiService.get('/trainers?status=active').catch(() =>
+          apiService.get('/trainers?isActive=true').catch(() => []),
+        ),
+        apiService.get('/employees?isActive=true').catch(() => []),
+      ]);
+      const orderList = Array.isArray(zData) ? zData : (zData as any)?.data || [];
+      const uniqueZones = [
+        ...new Set(orderList.map((d: any) => d.zone).filter(Boolean)),
+      ] as string[];
+      setZones(uniqueZones);
+      setTrainers(Array.isArray(tData) ? tData : (tData as any)?.data || []);
+      setEmployees(Array.isArray(eData) ? eData : (eData as any)?.data || []);
+    } catch {
+      // keep empty meta lists
+    }
+  }, []);
 
-  const loadData = async () => {
+  const loadTrainings = useCallback(async (filters: Filters) => {
     try {
       setLoading(true);
-      let endpoint = '/training';
-      if (filter !== 'all') {
-        endpoint += `?status=${filter}`;
-      }
-      const data = await apiService.get(endpoint);
-      setTrainings(Array.isArray(data) ? data : []);
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load trainings');
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([k, v]) => {
+        if (v) params.append(k, v);
+      });
+      const qs = params.toString();
+      const data = await apiService.get(`/training${qs ? `?${qs}` : ''}`);
+      setItems(Array.isArray(data) ? data : (data as any)?.data || []);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to load trainings');
+      setItems([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
+  }, []);
+
+  useEffect(() => {
+    loadMeta();
+    loadTrainings(appliedFilters);
+  }, [loadMeta, loadTrainings, appliedFilters]);
+
+  const onSearch = () => {
+    setAppliedFilters({ ...draftFilters });
   };
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadData();
+    loadMeta();
+    loadTrainings(appliedFilters);
   };
 
   const formatDate = (dateString?: string) => {
     if (!dateString) return '-';
     try {
-      return new Date(dateString).toLocaleDateString('en-IN');
+      return new Date(dateString).toLocaleDateString();
     } catch {
       return '-';
     }
   };
 
-  const getStatusColor = (status?: string) => {
-    switch (status?.toLowerCase()) {
-      case 'completed':
-        return colors.success;
-      case 'scheduled':
-        return colors.info;
-      case 'cancelled':
-        return colors.error || '#ef4444';
-      default:
-        return colors.textSecondary;
+  const resolveDocUrl = (raw?: string) => {
+    if (!raw || !String(raw).trim()) return null;
+    const trimmed = String(raw).trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('data:')) {
+      try {
+        const u = new URL(trimmed);
+        if (u.pathname.startsWith('/uploads/')) {
+          return `${getApiUrl().replace(/\/api\/?$/, '')}${u.pathname}${u.search}`;
+        }
+      } catch (_) {
+        /* use as-is */
+      }
+      return trimmed;
     }
+    const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    return `${getApiUrl().replace(/\/api\/?$/, '')}${path}`;
+  };
+
+  const openPoImage = (url?: string) => {
+    const resolved = resolveDocUrl(url);
+    if (!resolved) return;
+    Linking.openURL(resolved).catch(() => Alert.alert('Error', 'Could not open document'));
+  };
+
+  const cancelTraining = (id: string) => {
+    Alert.alert('Cancel training', 'Cancel this training?', [
+      { text: 'No', style: 'cancel' },
+      {
+        text: 'Yes',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await apiService.put(`/training/${id}/cancel`, {});
+            loadTrainings(appliedFilters);
+          } catch (e: any) {
+            Alert.alert('Error', e?.message || 'Failed to cancel');
+          }
+        },
+      },
+    ]);
   };
 
   return (
@@ -66,53 +195,107 @@ export default function TrainingListScreen({ navigation }: any) {
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
+      noScroll
     >
-<View style={styles.filterContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {(['all', 'Scheduled', 'Completed', 'Cancelled'] as const).map((filterType) => (
-            <TouchableOpacity key={filterType} style={[styles.filterTab, filter === filterType && styles.filterTabActive]} onPress={() => setFilter(filterType)}>
-              <Text style={[styles.filterTabText, filter === filterType && styles.filterTabTextActive]}>{filterType}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {trainings.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>🎓</Text>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        <View style={styles.filterCard}>
+          <WebSelect
+            placeholder="All Zones"
+            value={draftFilters.zone}
+            onValueChange={(v) => setDraftFilters((f) => ({ ...f, zone: v }))}
+            items={zones.map((z) => ({ label: z, value: z }))}
+          />
+          <WebSelect
+            placeholder="All Employees"
+            value={draftFilters.employeeId}
+            onValueChange={(v) => setDraftFilters((f) => ({ ...f, employeeId: v }))}
+            items={employees.map((e) => ({ label: e.name, value: e._id }))}
+          />
+          <WebSelect
+            placeholder="All Trainers"
+            value={draftFilters.trainerId}
+            onValueChange={(v) => setDraftFilters((f) => ({ ...f, trainerId: v }))}
+            items={trainers.map((t) => ({ label: t.name, value: t._id }))}
+          />
+          <WebInput
+            placeholder="By School Code"
+            value={draftFilters.schoolCode}
+            onChangeText={(v) => setDraftFilters((f) => ({ ...f, schoolCode: v }))}
+          />
+          <WebInput
+            placeholder="By School Name"
+            value={draftFilters.schoolName}
+            onChangeText={(v) => setDraftFilters((f) => ({ ...f, schoolName: v }))}
+          />
+          <WebInput
+            placeholder="From Date (YYYY-MM-DD)"
+            value={draftFilters.fromDate}
+            onChangeText={(v) => setDraftFilters((f) => ({ ...f, fromDate: v }))}
+          />
+          <WebInput
+            placeholder="To Date (YYYY-MM-DD)"
+            value={draftFilters.toDate}
+            onChangeText={(v) => setDraftFilters((f) => ({ ...f, toDate: v }))}
+          />
+          <WebButton title="Search" onPress={onSearch} />
+        </View>
+
+        {items.length === 0 ? (
+          <View style={styles.emptyBox}>
             <Text style={styles.emptyText}>No trainings found</Text>
           </View>
         ) : (
-          trainings.map((training) => (
-            <TouchableOpacity key={training._id} style={styles.card} onPress={() => navigation.navigate('TrainingEdit', { id: training._id })} activeOpacity={0.7}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.schoolName}>{training.schoolName || 'N/A'}</Text>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(training.status) + '20' }]}>
-                  <Text style={[styles.statusBadgeText, { color: getStatusColor(training.status) }]}>{training.status || 'Scheduled'}</Text>
-                </View>
-              </View>
-              <View style={styles.cardBody}>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Trainer:</Text>
-                  <Text style={styles.infoValue}>{training.trainerId?.name || '-'}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Subject:</Text>
-                  <Text style={styles.infoValue}>{training.subject || '-'}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Date:</Text>
-                  <Text style={styles.infoValue}>{formatDate(training.trainingDate)}</Text>
-                </View>
-                {training.zone && (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoLabel}>Zone:</Text>
-                    <Text style={styles.infoValue}>{training.zone}</Text>
+          items.map((t, idx) => {
+            const badge = statusStyle(t.status);
+            const docUrl = t.feedbackPdfUrl || t.poImageUrl;
+            return (
+              <View key={t._id} style={styles.card}>
+                <View style={styles.cardTop}>
+                  <Text style={styles.schoolName}>{t.schoolName || 'Unnamed School'}</Text>
+                  <View style={[styles.statusBadge, { backgroundColor: badge.bg }]}>
+                    <Text style={[styles.statusBadgeText, { color: badge.fg }]}>
+                      {t.status || 'Scheduled'}
+                    </Text>
                   </View>
-                )}
+                </View>
+                <InfoRow label="S.No" value={String(idx + 1)} />
+                <InfoRow label="School Code" value={t.schoolCode || '-'} />
+                <InfoRow label="Zone" value={t.zone || '-'} />
+                <InfoRow label="Town" value={t.town || '-'} />
+                <InfoRow label="Subject" value={t.subject || '-'} />
+                <InfoRow label="Trainer" value={t.trainerId?.name || '-'} />
+                <InfoRow label="Training Date" value={formatDate(t.trainingDate)} />
+                <InfoRow label="PO Image" value={docUrl ? 'Available' : '-'} />
+
+                <View style={styles.actions}>
+                  {docUrl ? (
+                    <TouchableOpacity style={styles.viewBtn} onPress={() => openPoImage(docUrl)}>
+                      <Text style={styles.viewBtnText}>View</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.editBtn}
+                    onPress={() => navigation.navigate('TrainingEdit', { id: t._id })}
+                  >
+                    <Ionicons name="pencil" size={16} color="#0F172A" />
+                    <Text style={styles.editBtnText}>Edit</Text>
+                  </TouchableOpacity>
+                  {t.status === 'Scheduled' ? (
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => cancelTraining(t._id)}>
+                      <Text style={styles.cancelBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={styles.dashAction}>-</Text>
+                  )}
+                </View>
               </View>
-            </TouchableOpacity>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </ScreenShell>
@@ -120,34 +303,105 @@ export default function TrainingListScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  addButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255, 255, 255, 0.2)', justifyContent: 'center', alignItems: 'center' },
-  addIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  filterContainer: { backgroundColor: colors.backgroundLight, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  filterTab: { paddingHorizontal: 20, paddingVertical: 8, marginHorizontal: 6, borderRadius: 20, backgroundColor: colors.background },
-  filterTabActive: { backgroundColor: colors.primary },
-  filterTabText: { ...typography.label.medium, color: colors.textSecondary },
-  filterTabTextActive: { color: colors.textLight, fontWeight: '600' },
-  content: { flex: 1, padding: 16 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 16 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: colors.shadowDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  schoolName: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  statusBadgeText: { ...typography.label.small, fontWeight: '600' },
-  cardBody: { marginBottom: 12 },
-  infoRow: { flexDirection: 'row', marginBottom: 6 },
-  infoLabel: { ...typography.body.medium, color: colors.textSecondary, width: 100 },
-  infoValue: { ...typography.body.medium, color: colors.textPrimary, flex: 1 },
+  content: { flex: 1 },
+  contentContainer: { padding: 16, paddingBottom: 32 },
+  filterCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    marginBottom: 16,
+    gap: 10,
+  },
+  emptyBox: {
+    paddingVertical: 48,
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  emptyText: { ...typography.body.medium, color: colors.textSecondary },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    marginBottom: 12,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  schoolName: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+    flex: 1,
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+    gap: 8,
+  },
+  infoLabel: {
+    width: 110,
+    ...typography.body.small,
+    color: colors.textSecondary,
+  },
+  infoValue: {
+    flex: 1,
+    ...typography.body.medium,
+    color: colors.textPrimary,
+  },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  viewBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#DBEAFE',
+  },
+  viewBtnText: { color: '#1D4ED8', fontWeight: '600', fontSize: 13 },
+  editBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+  },
+  editBtnText: { color: '#0F172A', fontWeight: '600', fontSize: 13 },
+  cancelBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#DC2626',
+  },
+  cancelBtnText: { color: '#FFFFFF', fontWeight: '600', fontSize: 13 },
+  dashAction: { color: '#94A3B8', fontSize: 16, paddingHorizontal: 8 },
 });
-
-

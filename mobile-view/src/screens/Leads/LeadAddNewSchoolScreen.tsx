@@ -42,6 +42,7 @@ type ProductSelection = {
   term: string;
   status: 'Hot' | 'Warm' | 'Not Interested' | 'Management Not Met' | 'Visit Again';
   strength: number;
+  unitPrice: number;
   chance: number;
 };
 
@@ -136,6 +137,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
             term: 'Term 1',
             status: 'Warm' as const,
             strength: 0,
+            unitPrice: 0,
             chance: 0,
           })),
         );
@@ -331,7 +333,7 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
       const productsPayload = selectedProducts.map((p) => ({
         product_name: p.name,
         quantity: 1,
-        unit_price: 0,
+        unit_price: p.unitPrice || 0,
         term: p.term || 'Term 1',
         status: p.status,
         strength: p.strength || 0,
@@ -613,6 +615,15 @@ export default function LeadAddNewSchoolScreen({ navigation }: any) {
                         placeholder="Qty"
                         keyboardType="number-pad"
                         editable={hotOrWarm}
+                      />
+                      <FormField
+                        label="Unit Price"
+                        value={product.unitPrice ? String(product.unitPrice) : ''}
+                        onChangeText={(text) =>
+                          updateProduct(index, { unitPrice: Math.max(0, Number(text) || 0) })
+                        }
+                        placeholder="Enter unit price"
+                        keyboardType="number-pad"
                       />
                       <FormField
                         label="Chance %"

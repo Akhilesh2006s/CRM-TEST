@@ -288,10 +288,24 @@ export default function DCClientScreen({ navigation }: any) {
     }
   };
 
-  const filteredDCs = dcs.filter((dc) => {
-    const customerName = dc.customerName || dc.dcOrderId?.school_name || '';
-    return customerName.toLowerCase().includes(searchQuery.toLowerCase());
-  });
+  const filteredDCs = dcs
+    .filter((dc) => {
+      const customerName = dc.customerName || dc.dcOrderId?.school_name || '';
+      return customerName.toLowerCase().includes(searchQuery.toLowerCase());
+    })
+    .slice()
+    .sort((a, b) => {
+      const turnedMs = (dc: any) => {
+        const order =
+          dc?.dcOrderId && typeof dc.dcOrderId === 'object' ? dc.dcOrderId : null;
+        const primary =
+          order?.createdAt || dc?.createdAt || order?.updatedAt || dc?.updatedAt;
+        if (!primary) return 0;
+        const t = new Date(primary).getTime();
+        return Number.isFinite(t) ? t : 0;
+      };
+      return turnedMs(b) - turnedMs(a);
+    });
 
   return (
     <ScreenShell

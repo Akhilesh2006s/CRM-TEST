@@ -538,12 +538,15 @@ export default function ClientEditPOScreen({ navigation, route }: any) {
       .filter((p) => p.product_name?.trim())
       .map((p) => {
         const src = p._source || {};
+        // Edit PO is a commercial update. Do not send lead qualification fields,
+        // otherwise a historical Warm status can trigger Chance % validation here.
+        const { status: _status, chance: _chance, lead_status: _leadStatus, ...commercialSrc } = src;
         const priceEditable = p.isNew === true && !originalEditRowIds.has(p.id);
         const unit_price = priceEditable
           ? Number(p.unit_price) || 0
           : Number(originalEditRowPrices[p.id] ?? p.unit_price) || 0;
         return {
-          ...src,
+          ...commercialSrc,
           product_name: p.product_name.trim(),
           quantity: Number(p.quantity) || 0,
           unit_price,
@@ -557,13 +560,16 @@ export default function ClientEditPOScreen({ navigation, route }: any) {
         };
       });
     // Keep Term 2 lines on the order (managed via Term-Wise DC, not this screen)
-    const term2Payload = term2Products.map((p) => ({
-      ...p,
-      product_name: p.product_name || p.product || 'Abacus',
-      quantity: Number(p.quantity) || 0,
-      unit_price: Number(p.unit_price) || 0,
-      term: 'Term 2',
-    }));
+    const term2Payload = term2Products.map((p) => {
+      const { status: _status, chance: _chance, lead_status: _leadStatus, ...commercialProduct } = p;
+      return {
+        ...commercialProduct,
+        product_name: p.product_name || p.product || 'Abacus',
+        quantity: Number(p.quantity) || 0,
+        unit_price: Number(p.unit_price) || 0,
+        term: 'Term 2',
+      };
+    });
     const productsPayload = [...term1Payload, ...term2Payload];
     const total_amount = productsPayload.reduce(
       (s, p) => s + (Number(p.quantity) || 0) * (Number(p.unit_price) || 0),

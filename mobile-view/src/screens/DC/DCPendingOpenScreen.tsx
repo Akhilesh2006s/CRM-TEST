@@ -25,9 +25,28 @@ import { useAuth } from '../../context/AuthContext';
 import ScreenShell, { PageSection } from '../../ui/ScreenShell';
 import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
 import MessageBanner from '../../components/MessageBanner';
+import {
+  applyCatalogDefaultsToRow,
+  findCatalogProduct,
+  getCatalogProductNames,
+  getProductCategoryOptions,
+  getProductLevelsOptions,
+  getProductSpecsOptions,
+  getProductSubjectsOptions,
+} from '../../utils/productCatalog';
 
 const CLASSES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
-const CATEGORIES = ['New Students', 'Existing Students', 'Both'];
+const CATEGORY_OPTIONS = [
+  'NA',
+  'Training Mterial',
+  'new Students',
+  'Old Students',
+  'Excess',
+  'Exchange',
+  'Shortage',
+  'Excess-OldStudents',
+  'Excess NewStudents',
+];
 const DC_CATEGORIES = ['Term 1', 'Term 2', 'Term 3', 'Full Year'];
 const TERMS = ['Term 1', 'Term 2', 'Both'];
 
@@ -43,6 +62,28 @@ type ProductRow = {
   level: string;
   term: string;
 };
+
+const DEFAULT_ROW: Omit<ProductRow, 'id'> = {
+  product: 'Abacus',
+  class: '1',
+  category: 'new Students',
+  specs: 'Regular',
+  strength: 0,
+  level: 'L1',
+  term: 'Term 1',
+};
+
+function resolveLineQty(p: { quantity?: unknown; strength?: unknown; qty?: unknown }) {
+  for (const raw of [p.quantity, p.strength, p.qty]) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  for (const raw of [p.quantity, p.strength, p.qty]) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+}
 
 const dash = (v?: string | null) => {
   const s = String(v || '').trim();
@@ -67,6 +108,8 @@ type DcOrderData = {
   transport_location?: string;
   transportation_landmark?: string;
   pincode?: string;
+  products?: any[];
+  dcRequestData?: { productDetails?: any[] };
   pendingEdit?: {
     transport_name?: string;
     transport_location?: string;
@@ -255,9 +298,10 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
           : typeof fullDC.dcOrderId === 'string'
             ? fullDC.dcOrderId
             : null;
+      let orderData: DcOrderData | null = null;
       if (orderId) {
         try {
-          const orderData = await apiService.get(`/dc-orders/${orderId}`);
+          orderData = await apiService.get(`/dc-orders/${orderId}`);
           setDcOrder(orderData);
         } catch {
           setDcOrder(null);
@@ -266,21 +310,32 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
         setDcOrder(null);
       }
 
-      // Product rows from DC.productDetails or fallback
-      if (fullDC.productDetails && Array.isArray(fullDC.productDetails) && fullDC.productDetails.length > 0) {
+      // Prefer this DC's productDetails; fall back to request snapshot / order products.
+      const dcDetails = Array.isArray(fullDC.productDetails) ? fullDC.productDetails : [];
+      const requestDetails = Array.isArray(orderData?.dcRequestData?.productDetails)
+        ? orderData!.dcRequestData!.productDetails!
+        : [];
+      const orderProducts = Array.isArray(orderData?.products) ? orderData!.products! : [];
+      const source =
+        dcDetails.length > 0 ? dcDetails : requestDetails.length > 0 ? requestDetails : orderProducts;
+
+      if (source.length > 0) {
         setProductRows(
-          fullDC.productDetails.map((p: any, idx: number) => ({
-            id: String(idx + 1),
-            product: p.product || p.productName || 'Abacus',
-            class: p.class != null && String(p.class).trim() ? String(p.class) : '1',
-            category: p.category || 'new Students',
-            productCategory: p.productCategory || undefined,
-            specs: p.specs || '',
-            subject: p.subject,
-            strength: Number(p.strength) ?? Number(p.quantity) ?? 0,
-            level: p.level || '',
-            term: p.term || 'Term 1',
-          }))
+          source.map((p: any, idx: number) => {
+            const qty = resolveLineQty(p);
+            return {
+              id: String(idx + 1),
+              product: p.product || p.productName || p.product_name || 'Abacus',
+              class: p.class != null && String(p.class).trim() ? String(p.class) : '1',
+              category: p.category || 'new Students',
+              productCategory: p.productCategory || undefined,
+              specs: p.specs || '',
+              subject: p.subject,
+              strength: qty > 0 ? qty : Number(fullDC.requestedQuantity) || 0,
+              level: p.level || '',
+              term: p.term || 'Term 1',
+            };
+          }),
         );
       } else {
         const rawProduct = fullDC.product || 'Abacus';
@@ -289,7 +344,7 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
             id: '1',
             product: rawProduct,
             class: '1',
-            category: 'New Students',
+            category: 'new Students',
             specs: 'Regular',
             strength: fullDC.requestedQuantity || 0,
             level: 'L1',
@@ -315,21 +370,43 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
     }
   };
 
-  const getProductLevels = (productName: string): string[] => {
-    const p = products.find((x: any) => (x.productName || x.name || x.product) === productName);
-    return p?.productLevels || ['L1'];
-  };
+  const getProductLevels = (productName: string): string[] =>
+    getProductLevelsOptions(products, productName);
 
-  const getDefaultLevel = (productName: string) => getProductLevels(productName)[0] || 'L1';
+  const getProductSpecs = (productName: string): string[] =>
+    getProductSpecsOptions(products, productName);
+
+  const getProductSubjects = (productName: string): string[] =>
+    getProductSubjectsOptions(products, productName);
+
+  const getProductCategories = (productName: string): string[] =>
+    getProductCategoryOptions(products, productName);
+
+  const getProductNames = (): string[] => getCatalogProductNames(products);
+
+  const applyProductDefaults = (row: ProductRow, productName: string): ProductRow => {
+    const catalogEntry = findCatalogProduct(products, productName);
+    const canonicalName = catalogEntry?.productName || productName;
+    return applyCatalogDefaultsToRow(
+      { ...row, product: canonicalName },
+      products,
+    ) as ProductRow;
+  };
 
   const updateProductRow = (id: string, field: keyof ProductRow, value: any) => {
     setProductRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        if (field === 'product') {
+          return applyProductDefaults({ ...r, product: value, strength: r.strength }, value);
+        }
+        return { ...r, [field]: value };
+      }),
     );
   };
 
   const removeProductRow = (id: string) => {
-    setProductRows((prev) => prev.filter((r) => r.id !== id));
+    setProductRows((prev) => (prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)));
   };
 
   const validateDcDetails = (): boolean => {
@@ -603,11 +680,16 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
           <FormField label="DC Notes *" value={dcNotes} onChangeText={setDcNotes} placeholder="Notes" />
         </View>
 
-        {/* Products */}
+        {/* Products & Quantities — same editable table as Raise / Update DC */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Products</Text>
+          <View style={styles.sectionTitleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sectionTitle}>Products & Quantities</Text>
+              <Text style={styles.sectionSubtitle}>Product details and quantities</Text>
+            </View>
+          </View>
           <ScrollView horizontal showsHorizontalScrollIndicator style={styles.tableScroll}>
-            <View style={styles.tableWrap}>
+            <View style={[styles.tableWrap, styles.tableWrapEditable]}>
               <View style={styles.tableHeader}>
                 <Text style={[styles.th, styles.colProduct]}>Product</Text>
                 <Text style={[styles.th, styles.colClass]}>Class</Text>
@@ -620,47 +702,159 @@ export default function DCPendingOpenScreen({ navigation, route }: any) {
                 <Text style={[styles.th, styles.colTerm]}>Term</Text>
                 <Text style={[styles.th, styles.colAction]}>Action</Text>
               </View>
-              {productRows.map((row) => (
-                <View key={row.id} style={styles.tableRow}>
-                  <Text style={[styles.tdText, styles.colProduct]} numberOfLines={1}>
-                    {dash(row.product)}
-                  </Text>
-                  <WebInput
-                    style={[styles.tableInput, styles.colClass]}
-                    value={row.class}
-                    onChangeText={(v) => updateProductRow(row.id, 'class', v)}
-                    placeholder="Class"
-                  />
-                  <Text style={[styles.tdText, styles.colCategory]} numberOfLines={1}>
-                    {dash(row.category)}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colProductCategory]} numberOfLines={1}>
-                    {dash(row.productCategory)}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colSpecs]} numberOfLines={1}>
-                    {dash(row.specs)}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colSubject]} numberOfLines={1}>
-                    {dash(row.subject)}
-                  </Text>
-                  <WebInput
-                    style={[styles.tableInput, styles.colQty]}
-                    value={String(row.strength || '')}
-                    onChangeText={(v) => updateProductRow(row.id, 'strength', Number(v) || 0)}
-                    keyboardType="numeric"
-                    placeholder="0"
-                  />
-                  <Text style={[styles.tdText, styles.colLevel]} numberOfLines={1}>
-                    {dash(row.level)}
-                  </Text>
-                  <Text style={[styles.tdText, styles.colTerm]} numberOfLines={1}>
-                    {dash(row.term || 'Term 1')}
-                  </Text>
-                  <TouchableOpacity style={[styles.td, styles.colAction]} onPress={() => removeProductRow(row.id)}>
-                    <Text style={styles.removeBtn}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
+              {productRows.map((row) => {
+                const productOpts = getProductNames();
+                const levelOpts = getProductLevels(row.product);
+                const specOpts = getProductSpecs(row.product);
+                const subjectOpts = getProductSubjects(row.product);
+                const skuOpts = getProductCategories(row.product);
+                const productList = (
+                  productOpts.includes(row.product) ? productOpts : [row.product, ...productOpts]
+                ).filter(Boolean);
+
+                return (
+                  <View key={row.id} style={styles.tableRow}>
+                    <View style={[styles.cell, styles.colProduct]}>
+                      <Picker
+                        selectedValue={row.product}
+                        onValueChange={(v) => updateProductRow(row.id, 'product', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {productList.map((p) => (
+                          <Picker.Item key={p} label={p} value={p} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colClass]}>
+                      <Picker
+                        selectedValue={row.class}
+                        onValueChange={(v) => updateProductRow(row.id, 'class', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {CLASSES.map((c) => (
+                          <Picker.Item key={c} label={c} value={c} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colCategory]}>
+                      <Picker
+                        selectedValue={row.category}
+                        onValueChange={(v) => updateProductRow(row.id, 'category', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {CATEGORY_OPTIONS.map((c) => (
+                          <Picker.Item key={c} label={c} value={c} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <View style={[styles.cell, styles.colProductCategory]}>
+                      {skuOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.productCategory || skuOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'productCategory', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {skuOpts.map((c) => (
+                            <Picker.Item key={c} label={c} value={c} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.productCategory?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colSpecs]}>
+                      {specOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.specs || specOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'specs', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {specOpts.map((s) => (
+                            <Picker.Item key={s} label={s} value={s} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.specs?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colSubject]}>
+                      {subjectOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.subject || subjectOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'subject', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {subjectOpts.map((s) => (
+                            <Picker.Item key={s} label={s} value={s} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <Text style={styles.cellPlain} numberOfLines={1}>
+                          {row.subject?.trim() || '-'}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colQty]}>
+                      <WebInput
+                        style={styles.cellInput}
+                        value={row.strength ? String(row.strength) : ''}
+                        onChangeText={(v) => updateProductRow(row.id, 'strength', Number(v) || 0)}
+                        keyboardType="numeric"
+                        placeholder="0"
+                      />
+                    </View>
+                    <View style={[styles.cell, styles.colLevel]}>
+                      {levelOpts.length > 0 ? (
+                        <Picker
+                          selectedValue={row.level || levelOpts[0]}
+                          onValueChange={(v) => updateProductRow(row.id, 'level', v)}
+                          style={styles.cellPicker}
+                          {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                        >
+                          {levelOpts.map((l) => (
+                            <Picker.Item key={l} label={l} value={l} />
+                          ))}
+                        </Picker>
+                      ) : (
+                        <WebInput
+                          style={styles.cellInput}
+                          value={row.level || ''}
+                          onChangeText={(v) => updateProductRow(row.id, 'level', v)}
+                          placeholder="Level"
+                        />
+                      )}
+                    </View>
+                    <View style={[styles.cell, styles.colTerm]}>
+                      <Picker
+                        selectedValue={row.term || 'Term 1'}
+                        onValueChange={(v) => updateProductRow(row.id, 'term', v)}
+                        style={styles.cellPicker}
+                        {...(Platform.OS === 'android' ? { mode: 'dropdown' as const } : {})}
+                      >
+                        {TERMS.map((t) => (
+                          <Picker.Item key={t} label={t} value={t} />
+                        ))}
+                      </Picker>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.cell, styles.colAction]}
+                      onPress={() => removeProductRow(row.id)}
+                    >
+                      <Text style={styles.removeBtn}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
               <View style={styles.tableFooter}>
                 <View style={styles.footerLeadingSpacer} />
                 <Text style={styles.footerLabel}>Grand Total:</Text>
@@ -765,7 +959,15 @@ const styles = StyleSheet.create({
   dcMeta: { flexDirection: 'row', gap: 16, marginBottom: 16 },
   dcMetaText: { ...typography.body.small, color: colors.textSecondary },
   section: { marginBottom: 24 },
-  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 12 },
+  sectionTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: 4 },
+  sectionSubtitle: { ...typography.body.small, color: colors.textSecondary, marginBottom: 0 },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
+  },
   fieldContainer: { marginBottom: 14 },
   label: { ...typography.label.medium, color: colors.textPrimary, marginBottom: 6 },
   input: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 12, color: colors.textPrimary },
@@ -782,7 +984,8 @@ const styles = StyleSheet.create({
   datePickerTitle: { ...typography.heading.h3, color: colors.textPrimary },
   doneText: { ...typography.label.medium, color: colors.primary, fontWeight: '600' },
   tableScroll: { marginHorizontal: -20 },
-  tableWrap: { minWidth: 980, paddingRight: 20 },
+  tableWrap: { minWidth: 980, paddingRight: 16 },
+  tableWrapEditable: { minWidth: 1080 },
   tableHeader: {
     flexDirection: 'row',
     backgroundColor: '#F8FAFC',
@@ -798,58 +1001,93 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.3,
+    paddingHorizontal: 4,
   },
   tableRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 8,
     alignItems: 'center',
     minHeight: 48,
     backgroundColor: '#fff',
   },
-  td: { ...typography.body.small, color: colors.textPrimary, justifyContent: 'center', paddingHorizontal: 4 },
+  td: {
+    ...typography.body.small,
+    color: colors.textPrimary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
   tdText: {
     ...typography.body.small,
     color: '#0F172A',
     paddingHorizontal: 4,
   },
-  tableInput: {
+  cell: {
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+  },
+  cellPicker: {
+    width: '100%',
+    height: 40,
+    color: colors.textPrimary,
+  },
+  cellPlain: {
+    ...typography.body.small,
+    color: '#0F172A',
+    paddingHorizontal: 4,
+  },
+  cellInput: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#CBD5E1',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
     fontSize: 13,
     minHeight: 36,
+    marginBottom: 0,
     color: colors.textPrimary,
     textAlign: 'center',
   },
-  colProduct: { width: 90 },
-  colClass: { width: 56 },
-  colCategory: { width: 110 },
-  colProductCategory: { width: 120 },
-  colSpecs: { width: 90 },
-  colSubject: { width: 80 },
-  colQty: { width: 72 },
-  colLevel: { width: 80 },
-  colTerm: { width: 72 },
-  colAction: { width: 48, alignItems: 'center' },
+  colProduct: { width: 120 },
+  colClass: { width: 72 },
+  colCategory: { width: 130 },
+  colProductCategory: { width: 130 },
+  colSpecs: { width: 100 },
+  colSubject: { width: 100 },
+  colQty: { width: 80 },
+  colLevel: { width: 100 },
+  colTerm: { width: 100 },
+  colAction: { width: 52, alignItems: 'center' },
   removeBtn: { fontSize: 18, color: '#DC2626', fontWeight: 'bold' },
   tableFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 8,
     backgroundColor: '#E2E8F0',
     borderTopWidth: 2,
     borderTopColor: '#94A3B8',
   },
-  footerLeadingSpacer: { width: 546 },
-  footerLabel: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 110, textAlign: 'right', paddingRight: 8 },
-  footerValue: { ...typography.body.medium, fontWeight: '700', color: colors.textPrimary, width: 72, textAlign: 'center' },
+  footerLeadingSpacer: { width: 652 },
+  footerLabel: {
+    ...typography.body.medium,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    width: 100,
+    textAlign: 'right',
+    paddingRight: 8,
+  },
+  footerValue: {
+    ...typography.body.medium,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    width: 80,
+    textAlign: 'center',
+  },
   footerTrailingSpacer: { flex: 1 },
   buttonRow: { flexDirection: 'column', gap: 12, marginTop: 16, marginBottom: 24 },
   cancelButton: {

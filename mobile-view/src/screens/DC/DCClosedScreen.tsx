@@ -1,415 +1,158 @@
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  RefreshControl,
-  Alert,
-  ActivityIndicator,
-} from 'react-native';
-import { colors } from '../../theme/colors';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert, Linking, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { apiService, getApiUrl } from '../../services/api';
+import { colors, radii, spacing } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
-import { apiService } from '../../services/api';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebButton, WebInput, WebSelect } from '../../ui/WebPrimitives';
 
-interface DcOrder {
-  _id: string;
-  school_name?: string;
-  contact_person?: string;
-  contact_mobile?: string;
-  zone?: string;
-  school_type?: string;
-  location?: string;
-  assigned_to?: { name?: string; _id?: string };
-  created_at?: string;
-  createdAt?: string;
-  status?: string;
-  pod_proof_url?: string;
-  isLead?: boolean;
-}
+type Product = { product_name?: string; product?: string; quantity?: number; strength?: number };
+type DcOrder = {
+  _id: string; school_name?: string; school_code?: string; school_type?: string; contact_mobile?: string;
+  zone?: string; location?: string; city?: string; address?: string; products?: Product[];
+  assigned_to?: { _id?: string; name?: string } | string; createdAt?: string; created_at?: string;
+  status?: string; pod_proof_url?: string;
+};
+type Filters = { school: string; mobile: string; from: string; to: string; zone: string; executive: string; town: string };
+const EMPTY_FILTERS: Filters = { school: '', mobile: '', from: '', to: '', zone: '', executive: '', town: '' };
+
+const listFromResponse = (response: any): DcOrder[] => Array.isArray(response) ? response : response?.data || [];
+const assignedId = (item: DcOrder) => typeof item.assigned_to === 'string' ? item.assigned_to : item.assigned_to?._id || '';
+const executiveName = (item: DcOrder) => typeof item.assigned_to === 'object' ? item.assigned_to?.name || '-' : '-';
+const townOf = (item: DcOrder) => item.city || item.location || item.address?.split(',')[0]?.trim() || '-';
+const productsOf = (item: DcOrder) => !item.products?.length ? '-' : item.products.map((p) => {
+  const quantity = Number(p.quantity ?? p.strength ?? 0);
+  return `${p.product_name || p.product || 'Product'}${quantity ? ` - ${quantity}` : ''}`;
+}).join(', ');
+const formatDate = (value?: string) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' });
+};
+const poUrl = (raw?: string) => {
+  if (!raw?.trim()) return null;
+  if (/^https?:\/\//i.test(raw) || raw.startsWith('data:')) return raw;
+  return `${getApiUrl().replace(/\/api\/?$/, '')}${raw.startsWith('/') ? raw : `/${raw}`}`;
+};
 
 export default function DCClosedScreen({ navigation }: any) {
   const [items, setItems] = useState<DcOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
-      setLoading(true);
-      
-      // Fetch DcOrders with various statuses
-      const [completedRes, savedRes, dcRequestedRes, dcAcceptedRes] = await Promise.all([
-        apiService.get('/dc-orders?status=completed').catch(() => ({ data: [] })),
-        apiService.get('/dc-orders?status=saved').catch(() => ({ data: [] })),
-        apiService.get('/dc-orders?status=dc_requested').catch(() => ({ data: [] })),
-        apiService.get('/dc-orders?status=dc_accepted').catch(() => ({ data: [] })),
+      const [requested, accepted] = await Promise.all([
+        apiService.get('/dc-orders?status=dc_requested&limit=1000'),
+        apiService.get('/dc-orders?status=dc_accepted&limit=1000'),
       ]);
-
-      const completedArray = Array.isArray(completedRes) ? completedRes : (completedRes?.data || []);
-      const savedArray = Array.isArray(savedRes) ? savedRes : (savedRes?.data || []);
-      const dcRequestedArray = Array.isArray(dcRequestedRes) ? dcRequestedRes : (dcRequestedRes?.data || []);
-      const dcAcceptedArray = Array.isArray(dcAcceptedRes) ? dcAcceptedRes : (dcAcceptedRes?.data || []);
-
-      let data = [...completedArray, ...savedArray, ...dcRequestedArray, ...dcAcceptedArray].filter(
-        (d: any) => d.status !== 'dc_approved' && d.status !== 'dc_sent_to_senior'
-      );
-
-      // Fetch closed leads
-      try {
-        const closedLeadsRes = await apiService.get('/leads?status=Closed&limit=1000');
-        const closedLeadsArray = Array.isArray(closedLeadsRes) ? closedLeadsRes : (closedLeadsRes?.data || []);
-        
-        const closedLeadsAsDeals: DcOrder[] = closedLeadsArray.map((lead: any) => ({
-          _id: lead._id,
-          school_name: lead.school_name || '',
-          contact_person: lead.contact_person || '',
-          contact_mobile: lead.contact_mobile || '',
-          zone: lead.zone || '',
-          school_type: lead.school_type || '',
-          location: lead.location || lead.address || '',
-          assigned_to: lead.managed_by || lead.assigned_by || lead.createdBy || undefined,
-          created_at: lead.createdAt,
-          createdAt: lead.createdAt,
-          status: 'Closed',
-          isLead: true,
-        }));
-
-        // Filter out closed leads that have matching DcOrders with dc_requested/dc_accepted
-        const filteredClosedLeads = closedLeadsAsDeals.filter((lead: DcOrder) => {
-          const hasMatchingDcOrder = data.some((dcOrder: any) => {
-            const schoolNameMatch = (dcOrder.school_name || '').toLowerCase().trim() === (lead.school_name || '').toLowerCase().trim();
-            const mobileMatch = (dcOrder.contact_mobile || '').trim() === (lead.contact_mobile || '').trim();
-            const isDcRequested = dcOrder.status === 'dc_requested' || dcOrder.status === 'dc_accepted';
-            return schoolNameMatch && mobileMatch && isDcRequested;
-          });
-          return !hasMatchingDcOrder;
-        });
-
-        data = [...data, ...filteredClosedLeads];
-      } catch (e) {
-        console.warn('Failed to load closed leads:', e);
-      }
-
-      // Sort by creation date (most recent first)
-      data.sort((a: any, b: any) => {
-        const dateA = new Date(a.createdAt || a.created_at || 0).getTime();
-        const dateB = new Date(b.createdAt || b.created_at || 0).getTime();
-        return dateB - dateA;
-      });
-
-      setItems(data);
+      const byId = new Map<string, DcOrder>();
+      [...listFromResponse(requested), ...listFromResponse(accepted)].forEach((item) => byId.set(item._id, item));
+      setItems(Array.from(byId.values()).sort((a, b) => new Date(b.createdAt || b.created_at || 0).getTime() - new Date(a.createdAt || a.created_at || 0).getTime()));
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load closed sales');
+      Alert.alert('Error', error?.message || 'Failed to load closed sales');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, []);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadData();
-  };
+  useEffect(() => { loadData(); }, [loadData]);
 
-  const formatDateTime = (dateString?: string) => {
-    if (!dateString) return '-';
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleString('en-IN', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return '-';
-    }
-  };
+  const zoneOptions = useMemo(() => {
+    const zones = Array.from(new Set(items.map((item) => item.zone?.trim()).filter(Boolean) as string[])).sort();
+    return [{ label: 'All Zones', value: '' }, ...zones.map((zone) => ({ label: zone, value: zone }))];
+  }, [items]);
+  const executiveOptions = useMemo(() => {
+    const executives = new Map<string, string>();
+    items.forEach((item) => { const id = assignedId(item); if (id) executives.set(id, executiveName(item)); });
+    return [{ label: 'All Executives', value: '' }, ...Array.from(executives).map(([value, label]) => ({ value, label }))];
+  }, [items]);
+  const filteredItems = useMemo(() => items.filter((item) => {
+    const created = new Date(item.createdAt || item.created_at || 0);
+    if (filters.school && !(item.school_name || '').toLowerCase().includes(filters.school.toLowerCase())) return false;
+    if (filters.mobile && !String(item.contact_mobile || '').includes(filters.mobile)) return false;
+    if (filters.zone && item.zone !== filters.zone) return false;
+    if (filters.executive && assignedId(item) !== filters.executive) return false;
+    if (filters.town && !townOf(item).toLowerCase().includes(filters.town.toLowerCase())) return false;
+    if (filters.from && created < new Date(`${filters.from}T00:00:00`)) return false;
+    if (filters.to && created > new Date(`${filters.to}T23:59:59`)) return false;
+    return true;
+  }), [filters, items]);
 
-  const getStatusButtonText = (status?: string) => {
-    if (status === 'dc_requested' || status === 'dc_accepted') {
-      return 'Raise DC';
-    }
-    if (status === 'dc_accepted') {
-      return 'Update DC';
-    }
-    return 'Raise DC';
+  const openPO = async (item: DcOrder) => {
+    const url = poUrl(item.pod_proof_url);
+    if (!url) return Alert.alert('PO not available', 'No PO document has been uploaded for this sale.');
+    try { await Linking.openURL(url); } catch { Alert.alert('Unable to open PO', 'The PO document could not be opened.'); }
   };
+  const refresh = () => { setRefreshing(true); loadData(); };
 
   return (
-    <ScreenShell
-      title="Closed Sales"
-      loading={loading && !refreshing}
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-    >
-<ScrollView
-        style={styles.content}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
-      >
-        {items.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📦</Text>
-            <Text style={styles.emptyText}>No closed sales found</Text>
-          </View>
-        ) : (
-          items.map((item) => (
-            <View key={item._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.schoolName}>
-                  {item.school_name || 'Unnamed School'}
-                </Text>
-                {item.status && (
-                  <View
-                    style={[
-                      styles.statusBadge,
-                      {
-                        backgroundColor:
-                          item.status === 'dc_requested' || item.status === 'dc_accepted'
-                            ? colors.primary + '20'
-                            : colors.success + '20',
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusBadgeText,
-                        {
-                          color:
-                            item.status === 'dc_requested' || item.status === 'dc_accepted'
-                              ? colors.primary
-                              : colors.success,
-                        },
-                      ]}
-                    >
-                      {item.status === 'dc_requested' || item.status === 'dc_accepted'
-                        ? 'DC Requested'
-                        : item.status}
-                    </Text>
-                  </View>
-                )}
+    <ScreenShell title="Closed Sales" loading={loading && !refreshing} refreshing={refreshing} onRefresh={refresh}>
+      <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />} keyboardShouldPersistTaps="handled">
+        <Text style={styles.pageTitle}>Closed Leads List</Text>
+        <View style={styles.filterCard}>
+          <WebInput placeholder="By School Name" value={filters.school} onChangeText={(school) => setFilters((f) => ({ ...f, school }))} />
+          <WebInput placeholder="By Contact Mobile No" value={filters.mobile} keyboardType="phone-pad" onChangeText={(mobile) => setFilters((f) => ({ ...f, mobile }))} />
+          <WebInput placeholder="From date (YYYY-MM-DD)" value={filters.from} onChangeText={(from) => setFilters((f) => ({ ...f, from }))} />
+          <WebInput placeholder="To date (YYYY-MM-DD)" value={filters.to} onChangeText={(to) => setFilters((f) => ({ ...f, to }))} />
+          <WebSelect value={filters.zone} onValueChange={(zone) => setFilters((f) => ({ ...f, zone }))} items={zoneOptions} />
+          <WebSelect value={filters.executive} onValueChange={(executive) => setFilters((f) => ({ ...f, executive }))} items={executiveOptions} />
+          <WebInput placeholder="By Town" value={filters.town} onChangeText={(town) => setFilters((f) => ({ ...f, town }))} />
+          <WebButton title="Clear Filters" onPress={() => setFilters(EMPTY_FILTERS)} />
+        </View>
+        {filteredItems.length === 0 ? <Text style={styles.empty}>No closed sales found.</Text> : filteredItems.map((item) => (
+          <View key={item._id} style={styles.saleCard}>
+            <View style={styles.cardHeader}>
+              <View style={styles.schoolHeader}>
+                <Text style={styles.schoolName}>{item.school_name || '-'}</Text>
+                <Text style={styles.schoolCode}>Code: {item.school_code || '-'}</Text>
               </View>
-
-              <View style={styles.cardBody}>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Executive:</Text>
-                  <Text style={styles.infoValue}>
-                    {item.assigned_to?.name || '-'}
-                  </Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Mobile:</Text>
-                  <Text style={styles.infoValue}>
-                    {item.contact_mobile || '-'}
-                  </Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Zone:</Text>
-                  <Text style={styles.infoValue}>{item.zone || '-'}</Text>
-                </View>
-                {item.location && (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoLabel}>Location:</Text>
-                    <Text style={styles.infoValue}>{item.location}</Text>
-                  </View>
-                )}
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Created:</Text>
-                  <Text style={styles.infoValue}>
-                    {formatDateTime(item.created_at || item.createdAt)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.cardFooter}>
-                <TouchableOpacity
-                  style={styles.actionButton}
-                  onPress={() => {
-                    // Navigate to DC create/edit screen
-                    navigation.navigate('DCCreate', { dealId: item._id });
-                  }}
-                >
-                  <Text style={styles.actionButtonText}>
-                    {getStatusButtonText(item.status)}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.viewLocationButton}
-                  onPress={() => {
-                    Alert.alert('Location', item.location || 'No location available');
-                  }}
-                >
-                  <Text style={styles.viewLocationButtonText}>
-                    View Location
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              <View style={styles.statusBadge}><Text style={styles.statusText}>{item.status === 'dc_accepted' ? 'DC Accepted' : 'DC Requested'}</Text></View>
             </View>
-          ))
-        )}
+            <View style={styles.detailsGrid}>
+              <View style={styles.detail}><Text style={styles.detailLabel}>Created On</Text><Text style={styles.detailValue}>{formatDate(item.createdAt || item.created_at)}</Text></View>
+              <View style={styles.detail}><Text style={styles.detailLabel}>School Type</Text><Text style={styles.detailValue}>{item.school_type || '-'}</Text></View>
+              <View style={styles.detail}><Text style={styles.detailLabel}>Zone</Text><Text style={styles.detailValue}>{item.zone || '-'}</Text></View>
+              <View style={styles.detail}><Text style={styles.detailLabel}>Town</Text><Text style={styles.detailValue}>{townOf(item)}</Text></View>
+              <View style={styles.detail}><Text style={styles.detailLabel}>Executive</Text><Text style={styles.detailValue}>{executiveName(item)}</Text></View>
+              <View style={styles.detail}><Text style={styles.detailLabel}>Mobile</Text><Text style={styles.detailValue}>{item.contact_mobile || '-'}</Text></View>
+            </View>
+            <View style={styles.productsBlock}><Text style={styles.detailLabel}>Products</Text><Text style={styles.productsValue}>{productsOf(item)}</Text></View>
+            <View style={styles.cardActions}>
+              {item.pod_proof_url ? <TouchableOpacity style={styles.outlineButton} onPress={() => openPO(item)}><Text style={styles.outlineButtonText}>View PO</Text></TouchableOpacity> : null}
+              <TouchableOpacity style={styles.outlineButton} onPress={() => Alert.alert('Location', item.location || item.address || 'No location available')}><Text style={styles.outlineButtonText}>View Location</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.raiseButton} onPress={() => navigation.navigate('DCCreate', { dealId: item._id })}><Text style={styles.raiseButtonText}>Raise DC</Text></TouchableOpacity>
+            </View>
+          </View>
+        ))}
       </ScrollView>
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-  },
-  loadingText: {
-    marginTop: 12,
-    ...typography.body.medium,
-    color: colors.textSecondary,
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 20,
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-  },
-  headerContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  backIcon: {
-    fontSize: 24,
-    color: colors.textLight,
-    fontWeight: 'bold',
-  },
-  headerTitle: {
-    ...typography.heading.h1,
-    color: colors.textLight,
-    flex: 1,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 40,
-  },
-  content: {
-    flex: 1,
-    padding: 16,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
-  emptyIcon: {
-    fontSize: 64,
-    marginBottom: 16,
-  },
-  emptyText: {
-    ...typography.heading.h3,
-    color: colors.textSecondary,
-  },
-  card: {
-    backgroundColor: colors.backgroundLight,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: colors.shadowDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  schoolName: {
-    ...typography.heading.h3,
-    color: colors.textPrimary,
-    flex: 1,
-  },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginLeft: 8,
-  },
-  statusBadgeText: {
-    ...typography.label.small,
-    fontWeight: '600',
-  },
-  cardBody: {
-    marginBottom: 12,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    marginBottom: 6,
-  },
-  infoLabel: {
-    ...typography.body.medium,
-    color: colors.textSecondary,
-    width: 90,
-  },
-  infoValue: {
-    ...typography.body.medium,
-    color: colors.textPrimary,
-    flex: 1,
-  },
-  cardFooter: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  actionButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-  },
-  actionButtonText: {
-    ...typography.label.medium,
-    color: colors.textLight,
-    fontWeight: '600',
-  },
-  viewLocationButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: colors.background,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-  },
-  viewLocationButtonText: {
-    ...typography.label.medium,
-    color: colors.textPrimary,
-    fontWeight: '600',
-  },
+  content: { padding: spacing.md, paddingBottom: spacing.xl },
+  pageTitle: { ...typography.heading.h3, color: colors.textPrimary, marginBottom: spacing.md },
+  filterCard: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: spacing.md, marginBottom: spacing.md },
+  saleCard: { backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: spacing.md, marginBottom: spacing.md },
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.md },
+  schoolHeader: { flex: 1 },
+  schoolName: { ...typography.heading.h4, color: colors.textPrimary },
+  schoolCode: { ...typography.label.small, color: colors.textSecondary, marginTop: 3 },
+  statusBadge: { borderRadius: radii.sm, backgroundColor: colors.primary + '18', paddingHorizontal: 8, paddingVertical: 5 },
+  statusText: { ...typography.label.small, color: colors.primary, fontWeight: '700' },
+  detailsGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
+  detail: { width: '50%', paddingHorizontal: 4, marginBottom: spacing.sm },
+  detailLabel: { ...typography.label.small, color: colors.textSecondary, marginBottom: 2 },
+  detailValue: { ...typography.label.small, color: colors.textPrimary, fontWeight: '600' },
+  productsBlock: { borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: spacing.sm, marginTop: 2 },
+  productsValue: { ...typography.label.small, color: colors.textPrimary, lineHeight: 19 },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: spacing.md, marginTop: spacing.md },
+  empty: { padding: spacing.lg, color: colors.textSecondary, textAlign: 'center' },
+  raiseButton: { backgroundColor: colors.error, borderRadius: radii.sm, paddingHorizontal: 12, paddingVertical: 7, minWidth: 86, alignItems: 'center' },
+  raiseButtonText: { ...typography.label.small, color: colors.textLight, fontWeight: '700' },
+  outlineButton: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.backgroundLight, minWidth: 86, alignItems: 'center' },
+  outlineButtonText: { ...typography.label.small, color: colors.textPrimary, fontWeight: '600' },
 });
-
-

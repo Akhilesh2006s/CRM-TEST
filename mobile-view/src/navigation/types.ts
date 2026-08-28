@@ -13,7 +13,7 @@ export type RootStackParamList = {
   LeadClose: { id: string };
   
   // DC Management
-  DCCreate: { dealId?: string };
+  DCCreate: { dealId?: string; mode?: 'raise' | 'update' };
   DCCreateSale: undefined;
   DCClosed: undefined;
   DCSaved: undefined;
@@ -38,6 +38,7 @@ export type RootStackParamList = {
   
   // Executive Managers
   ExecutiveManagers: undefined;
+  ExecutiveManagerNew: undefined;
   ExecutiveManagerDashboard: { managerId: string };
   ExecutiveManagerLeaves: { managerId: string };
   POChangeRequests: undefined;

@@ -6,15 +6,16 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  TextInput,
   Switch,
 } from 'react-native';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { apiService } from '../../services/api';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput } from '../../ui/WebPrimitives';
 import { useAuth } from '../../context/AuthContext';
+
+const TERM_OPTIONS = ['Term 1', 'Term 2', 'Term 3'] as const;
 
 export default function ProductNewScreen({ navigation }: any) {
   const { user } = useAuth();
@@ -38,24 +39,46 @@ export default function ProductNewScreen({ navigation }: any) {
     hasSpecs: false,
     specs: [] as string[],
     newSpec: '',
+    hasCategory: false,
+    categories: [] as string[],
+    newCategory: '',
     prodStatus: 1,
     calculationType: 'normal' as 'normal' | 'level_based' | 'subject_based',
   });
 
   const addLevel = () => {
-    if (form.newLevel.trim() && !form.productLevels.includes(form.newLevel.trim())) {
-      setForm({
-        ...form,
-        productLevels: [...form.productLevels, form.newLevel.trim()],
-        newLevel: '',
-      });
-    }
+    const value = form.newLevel.trim();
+    if (!value || form.productLevels.includes(value)) return;
+    setForm({
+      ...form,
+      productLevels: [...form.productLevels, value],
+      newLevel: '',
+    });
+  };
+
+  const addNamedTerm = (term: string) => {
+    // Prefer custom label from the input (e.g. "hi" for Term 1 slot)
+    const value = form.newLevel.trim() || term;
+    if (!value || form.productLevels.includes(value)) return;
+    setForm({
+      ...form,
+      productLevels: [...form.productLevels, value],
+      newLevel: '',
+    });
   };
 
   const removeLevel = (index: number) => {
     setForm({
       ...form,
       productLevels: form.productLevels.filter((_, i) => i !== index),
+    });
+  };
+
+  const renameLevel = (index: number, next: string) => {
+    setForm((prev) => {
+      const nextLevels = [...prev.productLevels];
+      nextLevels[index] = next;
+      return { ...prev, productLevels: nextLevels };
     });
   };
 
@@ -93,6 +116,23 @@ export default function ProductNewScreen({ navigation }: any) {
     });
   };
 
+  const addCategory = () => {
+    if (form.newCategory.trim() && !form.categories.includes(form.newCategory.trim())) {
+      setForm({
+        ...form,
+        categories: [...form.categories, form.newCategory.trim()],
+        newCategory: '',
+      });
+    }
+  };
+
+  const removeCategory = (index: number) => {
+    setForm({
+      ...form,
+      categories: form.categories.filter((_, i) => i !== index),
+    });
+  };
+
   const onSubmit = async () => {
     clearMessages();
     setSubmitting(true);
@@ -115,6 +155,12 @@ export default function ProductNewScreen({ navigation }: any) {
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
+    if (form.hasCategory && form.categories.length === 0) {
+      setErrorMessage('At least one product category is required when product categories are enabled');
+      setSubmitting(false);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
     if (form.calculationType === 'level_based' && form.productLevels.length === 0) {
       setErrorMessage('Level-based payment requires at least one product level');
       setSubmitting(false);
@@ -129,13 +175,15 @@ export default function ProductNewScreen({ navigation }: any) {
     }
 
     try {
-      const payload: any = {
+      const payload = {
         productName: form.productName.trim(),
-        productLevels: form.productLevels,
+        productLevels: form.productLevels.map((l) => l.trim()).filter(Boolean),
         hasSubjects: form.hasSubjects,
         subjects: form.hasSubjects ? form.subjects : [],
         hasSpecs: form.hasSpecs,
         specs: form.hasSpecs ? form.specs : [],
+        hasCategory: form.hasCategory,
+        categories: form.hasCategory ? form.categories : [],
         prodStatus: form.prodStatus,
         calculationType: form.calculationType,
       };
@@ -156,17 +204,20 @@ export default function ProductNewScreen({ navigation }: any) {
 
   if (!user || (user.role !== 'Admin' && user.role !== 'Super Admin')) {
     return (
-    <ScreenShell
-      title="Add New Product"
-    >
-<Text style={styles.errorText}>Access denied. Admin privileges required.</Text>
-    </ScreenShell>
-  );
+      <ScreenShell title="Add New Product">
+        <Text style={styles.errorText}>Access denied. Admin privileges required.</Text>
+      </ScreenShell>
+    );
   }
 
   return (
-    <View style={styles.container}>
-      <ScrollView ref={scrollRef} style={styles.content} contentContainerStyle={styles.contentContainer}>
+    <ScreenShell title="Add New Product" showBack noScroll>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+      >
         {successMessage ? (
           <View style={styles.successBanner}>
             <Text style={styles.successIcon}>✓</Text>
@@ -188,6 +239,7 @@ export default function ProductNewScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
         ) : null}
+
         <View style={styles.formCard}>
           <View style={styles.formSection}>
             <Text style={styles.label}>Product Name *</Text>
@@ -212,10 +264,7 @@ export default function ProductNewScreen({ navigation }: any) {
               ).map(({ key, label }) => (
                 <TouchableOpacity
                   key={key}
-                  style={[
-                    styles.chip,
-                    form.calculationType === key && styles.chipActive,
-                  ]}
+                  style={[styles.chip, form.calculationType === key && styles.chipActive]}
                   onPress={() => setForm({ ...form, calculationType: key })}
                 >
                   <Text
@@ -229,31 +278,57 @@ export default function ProductNewScreen({ navigation }: any) {
                 </TouchableOpacity>
               ))}
             </View>
-            <Text style={styles.hint}>Level-Based: Total amount is divided by number of levels (terms)</Text>
-            <Text style={styles.hint}>Subject-Based: Total amount is divided by number of selected subjects</Text>
+            <Text style={styles.hint}>
+              Level-Based: Total amount is divided by number of levels (terms)
+            </Text>
+            <Text style={styles.hint}>
+              Subject-Based: Total amount is divided by number of selected subjects
+            </Text>
             <Text style={styles.hint}>Normal: Full amount is charged without division</Text>
           </View>
 
           <View style={styles.formSection}>
-            <Text style={styles.label}>Product Levels</Text>
-            <Text style={styles.hint}>Add levels like L1, L2, L3, etc.</Text>
-            <View style={styles.addRow}>
-              <WebInput
-                style={[styles.input, styles.addInput]}
-                placeholder="Enter level (e.g., L1, L2)"
-                value={form.newLevel}
-                onChangeText={(text) => setForm({ ...form, newLevel: text })}
-                onSubmitEditing={addLevel}
-              />
-              <TouchableOpacity style={styles.addButton} onPress={addLevel}>
-                <Text style={styles.addButtonText}>Add</Text>
-              </TouchableOpacity>
+            <Text style={styles.label}>Term</Text>
+            <Text style={styles.hint}>
+              Type a custom name (e.g. hi), then tap Add Term 1 / Term 2 — or edit names below.
+            </Text>
+            <WebInput
+              style={[styles.input, styles.termInput]}
+              placeholder="Custom name for next term (e.g. hi)"
+              value={form.newLevel}
+              onChangeText={(text) => setForm({ ...form, newLevel: text })}
+              onSubmitEditing={addLevel}
+            />
+            <View style={styles.chipRow}>
+              {TERM_OPTIONS.map((term) => {
+                const label = form.newLevel.trim() || term;
+                const alreadyAdded = form.productLevels.includes(label);
+                return (
+                  <TouchableOpacity
+                    key={term}
+                    style={[styles.termBtn, alreadyAdded && styles.termBtnDisabled]}
+                    onPress={() => addNamedTerm(term)}
+                    disabled={alreadyAdded}
+                  >
+                    <Text
+                      style={[styles.termBtnText, alreadyAdded && styles.termBtnTextDisabled]}
+                    >
+                      Add {term}
+                      {form.newLevel.trim() ? ` as “${form.newLevel.trim()}”` : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
             {form.productLevels.length > 0 && (
-              <View style={styles.badgeContainer}>
+              <View style={[styles.badgeContainer, styles.termBadges]}>
                 {form.productLevels.map((level, idx) => (
                   <View key={idx} style={styles.badge}>
-                    <Text style={styles.badgeText}>{level}</Text>
+                    <WebInput
+                      style={styles.badgeInput}
+                      value={level}
+                      onChangeText={(text) => renameLevel(idx, text)}
+                    />
                     <TouchableOpacity onPress={() => removeLevel(idx)}>
                       <Text style={styles.badgeRemove}>×</Text>
                     </TouchableOpacity>
@@ -350,13 +425,61 @@ export default function ProductNewScreen({ navigation }: any) {
           )}
 
           <View style={styles.formSection}>
+            <View style={styles.switchRow}>
+              <Text style={styles.label}>Has Product Category</Text>
+              <Switch
+                value={form.hasCategory}
+                onValueChange={(value) => setForm({ ...form, hasCategory: value })}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                thumbColor={colors.backgroundLight}
+              />
+            </View>
+          </View>
+
+          {form.hasCategory && (
+            <View style={styles.formSection}>
+              <Text style={styles.label}>Product Categories *</Text>
+              <Text style={styles.hint}>Add one or multiple product categories</Text>
+              <View style={styles.addRow}>
+                <WebInput
+                  style={[styles.input, styles.addInput]}
+                  placeholder="Enter product category name"
+                  value={form.newCategory}
+                  onChangeText={(text) => setForm({ ...form, newCategory: text })}
+                  onSubmitEditing={addCategory}
+                />
+                <TouchableOpacity style={styles.addButton} onPress={addCategory}>
+                  <Text style={styles.addButtonText}>Add</Text>
+                </TouchableOpacity>
+              </View>
+              {form.categories.length > 0 && (
+                <View style={styles.badgeContainer}>
+                  {form.categories.map((category, idx) => (
+                    <View key={idx} style={[styles.badge, styles.badgeSecondary]}>
+                      <Text style={styles.badgeText}>{category}</Text>
+                      <TouchableOpacity onPress={() => removeCategory(idx)}>
+                        <Text style={styles.badgeRemove}>×</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
+          <View style={styles.formSection}>
             <Text style={styles.label}>Product Status *</Text>
             <View style={styles.statusContainer}>
               <TouchableOpacity
                 style={[styles.statusButton, form.prodStatus === 1 && styles.statusButtonActive]}
                 onPress={() => setForm({ ...form, prodStatus: 1 })}
               >
-                <Text style={[styles.statusButtonText, form.prodStatus === 1 && styles.statusButtonTextActive]}>
+                <Text
+                  style={[
+                    styles.statusButtonText,
+                    form.prodStatus === 1 && styles.statusButtonTextActive,
+                  ]}
+                >
                   Available
                 </Text>
               </TouchableOpacity>
@@ -364,7 +487,12 @@ export default function ProductNewScreen({ navigation }: any) {
                 style={[styles.statusButton, form.prodStatus === 0 && styles.statusButtonActive]}
                 onPress={() => setForm({ ...form, prodStatus: 0 })}
               >
-                <Text style={[styles.statusButtonText, form.prodStatus === 0 && styles.statusButtonTextActive]}>
+                <Text
+                  style={[
+                    styles.statusButtonText,
+                    form.prodStatus === 0 && styles.statusButtonTextActive,
+                  ]}
+                >
                   Not Available
                 </Text>
               </TouchableOpacity>
@@ -392,39 +520,95 @@ export default function ProductNewScreen({ navigation }: any) {
           </View>
         </View>
       </ScrollView>
-    </View>
+    </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitleContainer: { flex: 1, alignItems: 'center' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, marginBottom: 4 },
-  headerSubtitle: { ...typography.body.small, color: colors.textLight + 'CC' },
-  placeholder: { width: 40 },
   content: { flex: 1 },
   contentContainer: { padding: 16, paddingBottom: 32 },
-  formCard: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 20, shadowColor: colors.shadowDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
+  formCard: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: colors.shadowDark,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
   formSection: { marginBottom: 24 },
-  label: { ...typography.body.medium, color: colors.textPrimary, marginBottom: 8, fontWeight: '600' },
+  label: {
+    ...typography.body.medium,
+    color: colors.textPrimary,
+    marginBottom: 8,
+    fontWeight: '600',
+  },
   hint: { ...typography.body.small, color: colors.textSecondary, marginBottom: 8 },
-  input: { backgroundColor: colors.background, borderRadius: 12, padding: 12, ...typography.body.medium, color: colors.textPrimary, borderWidth: 1, borderColor: colors.border },
+  input: {
+    backgroundColor: colors.background,
+    borderRadius: 12,
+    padding: 12,
+    ...typography.body.medium,
+    color: colors.textPrimary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   addRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   addInput: { flex: 1 },
-  addButton: { backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, justifyContent: 'center' },
+  addButton: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    justifyContent: 'center',
+  },
   addButtonText: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
   badgeContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  badge: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: colors.primary + '30' },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary + '15',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.primary + '30',
+  },
   badgeSecondary: { backgroundColor: colors.info + '15', borderColor: colors.info + '30' },
   badgeText: { ...typography.body.small, color: colors.textPrimary, marginRight: 6 },
-  badgeRemove: { ...typography.body.medium, color: colors.error, fontWeight: 'bold', fontSize: 18 },
-  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  badgeInput: {
+    ...typography.body.small,
+    color: colors.textPrimary,
+    minWidth: 72,
+    maxWidth: 140,
+    paddingVertical: 0,
+    paddingHorizontal: 4,
+    marginRight: 4,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
+  badgeRemove: {
+    ...typography.body.medium,
+    color: colors.error,
+    fontWeight: 'bold',
+    fontSize: 18,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   statusContainer: { flexDirection: 'row', gap: 12 },
-  statusButton: { flex: 1, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, alignItems: 'center' },
+  statusButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    alignItems: 'center',
+  },
   statusButtonActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   statusButtonText: { ...typography.body.medium, color: colors.textPrimary },
   statusButtonTextActive: { color: colors.textLight, fontWeight: '600' },
@@ -440,6 +624,23 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { ...typography.body.small, color: colors.textPrimary },
   chipTextActive: { color: colors.textLight, fontWeight: '600' },
+  termInput: { marginBottom: 10 },
+  termBadges: { marginTop: 12 },
+  termBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  termBtnDisabled: {
+    opacity: 0.45,
+    backgroundColor: '#F8FAFC',
+  },
+  termBtnText: { ...typography.body.small, color: colors.textPrimary, fontWeight: '500' },
+  termBtnTextDisabled: { color: colors.textSecondary },
   successBanner: {
     backgroundColor: '#D1FAE5',
     borderRadius: 12,
@@ -449,8 +650,19 @@ const styles = StyleSheet.create({
     borderColor: '#10B981',
   },
   successIcon: { fontSize: 24, color: '#10B981', marginBottom: 8, fontWeight: 'bold' },
-  successText: { ...typography.body.medium, color: '#065F46', fontWeight: '600', marginBottom: 12 },
-  viewProductsButton: { alignSelf: 'flex-start', backgroundColor: '#10B981', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
+  successText: {
+    ...typography.body.medium,
+    color: '#065F46',
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  viewProductsButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#10B981',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
   viewProductsButtonText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   errorBanner: {
     backgroundColor: '#FEE2E2',
@@ -467,10 +679,12 @@ const styles = StyleSheet.create({
   errorText: { ...typography.body.medium, color: colors.error },
   buttonRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
   button: { flex: 1, padding: 16, borderRadius: 12, alignItems: 'center' },
-  buttonCancel: { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
+  buttonCancel: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   buttonSubmit: { backgroundColor: colors.primary },
   buttonTextCancel: { ...typography.body.medium, color: colors.textPrimary, fontWeight: '600' },
   buttonTextSubmit: { ...typography.body.medium, color: colors.textLight, fontWeight: '600' },
 });
-
-

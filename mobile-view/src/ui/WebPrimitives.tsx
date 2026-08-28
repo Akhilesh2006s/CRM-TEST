@@ -81,6 +81,9 @@ export function WebSelect({
   /** Tighter layout for data tables */
   compact?: boolean;
 }) {
+  const safeItems = items.filter((i) => String(i?.value ?? '').trim() !== '' && String(i?.label ?? '').trim() !== '');
+  const pickerHeight = compact ? 34 : 48;
+
   if (Platform.OS === 'web') {
     return (
       <View style={[styles.selectWrap, compact && styles.selectWrapCompact]}>
@@ -101,12 +104,12 @@ export function WebSelect({
               color: '#1E293B',
               marginBottom: 0,
               boxSizing: 'border-box',
-              minHeight: compact ? 34 : 44,
+              minHeight: pickerHeight,
             },
           },
           [
             React.createElement('option', { key: '__placeholder', value: '' }, placeholder || 'Select…'),
-            ...items.map((i) =>
+            ...safeItems.map((i) =>
               React.createElement('option', { key: String(i.value), value: i.value }, i.label)
             ),
           ]
@@ -119,10 +122,21 @@ export function WebSelect({
     <View style={[styles.selectWrap, compact && styles.selectWrapCompact]}>
       {label ? <WebLabel>{label}</WebLabel> : null}
       <View style={[styles.pickerBox, compact && styles.pickerBoxCompact, disabled && styles.pickerBoxDisabled]}>
-        <Picker selectedValue={value} onValueChange={onValueChange} enabled={!disabled}>
-          {placeholder ? <Picker.Item label={placeholder} value="" /> : null}
-          {items.map((i) => (
-            <Picker.Item key={i.value} label={i.label} value={i.value} />
+        <Picker
+          selectedValue={value || ''}
+          onValueChange={(v) => onValueChange(v == null ? '' : String(v))}
+          enabled={!disabled}
+          mode={Platform.OS === 'android' ? 'dropdown' : undefined}
+          style={{ width: '100%', height: pickerHeight }}
+          dropdownIconColor={colors.textSecondary}
+          {...(Platform.OS === 'ios' ? { itemStyle: { height: pickerHeight, fontSize: 15 } } : {})}
+        >
+          {/* Keep placeholder only when nothing selected — empty + selected items cause large Android gaps */}
+          {!value ? (
+            <Picker.Item label={placeholder || 'Select…'} value="" color={colors.textSecondary} />
+          ) : null}
+          {safeItems.map((i) => (
+            <Picker.Item key={String(i.value)} label={String(i.label)} value={String(i.value)} />
           ))}
         </Picker>
       </View>
@@ -199,8 +213,10 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.backgroundLight,
     overflow: 'hidden',
+    justifyContent: 'center',
+    height: 48,
   },
-  pickerBoxCompact: { minHeight: 34 },
+  pickerBoxCompact: { height: 34, minHeight: 34 },
   pickerBoxDisabled: { opacity: 0.6, backgroundColor: colors.backgroundMuted },
   table: {
     backgroundColor: colors.backgroundLight,

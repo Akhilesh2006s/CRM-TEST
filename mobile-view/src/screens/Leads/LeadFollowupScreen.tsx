@@ -342,17 +342,9 @@ export default function LeadFollowupScreen({ navigation }: any) {
       filtered = filtered.filter((l) => l.contact_mobile?.includes(mobileFilter));
     }
     filtered.sort((a, b) => {
-      // Most recently updated / followed-up first (then created)
-      const aTime = Math.max(
-        a.updatedAt ? new Date(a.updatedAt).getTime() : 0,
-        a.follow_up_date ? new Date(a.follow_up_date).getTime() : 0,
-        a.createdAt ? new Date(a.createdAt).getTime() : 0,
-      );
-      const bTime = Math.max(
-        b.updatedAt ? new Date(b.updatedAt).getTime() : 0,
-        b.follow_up_date ? new Date(b.follow_up_date).getTime() : 0,
-        b.createdAt ? new Date(b.createdAt).getTime() : 0,
-      );
+      // Newest leads first everywhere
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return bTime - aTime;
     });
     setLeads(filtered);

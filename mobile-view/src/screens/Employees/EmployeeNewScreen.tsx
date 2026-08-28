@@ -7,8 +7,6 @@ import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/We
 import { apiService } from '../../services/api';
 import EmployeeTaggingPicker, { supportsEmployeeTagging } from '../../components/EmployeeTaggingPicker';
 
-type Zone = { _id?: string; name: string };
-
 export default function EmployeeNewScreen({ navigation }: any) {
   const [form, setForm] = useState({
     firstName: '',
@@ -16,7 +14,7 @@ export default function EmployeeNewScreen({ navigation }: any) {
     empCode: '',
     email: '',
     password: '',
-    phone: '0',
+    phone: '',
     mobile: '',
     address1: '',
     state: '',
@@ -29,7 +27,8 @@ export default function EmployeeNewScreen({ navigation }: any) {
     taggedEmployeeIds: [] as string[],
   });
   const [submitting, setSubmitting] = useState(false);
-  const [zones, setZones] = useState<Zone[]>([]);
+  const [zones, setZones] = useState<string[]>([]);
+  const [clustersByZone, setClustersByZone] = useState<Record<string, string[]>>({});
   const [loadingPincode, setLoadingPincode] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -40,16 +39,56 @@ export default function EmployeeNewScreen({ navigation }: any) {
   ];
 
   const scrollRef = useRef<ScrollView>(null);
+  const clustersForZone = clustersByZone[form.zone] || [];
 
   useEffect(() => {
-    apiService.get<Zone[]>('/zones')
-      .then((data) => setZones(Array.isArray(data) ? data : []))
-      .catch(() => setZones([]));
+    const loadZonesAndClusters = async () => {
+      try {
+        const [pairsRaw, zonesRaw] = await Promise.all([
+          apiService.get<{ zone?: string; cluster?: string }[]>('/zones-clusters').catch(() => []),
+          apiService.get<{ name?: string }[]>('/zones').catch(() => []),
+        ]);
+        const pairs = Array.isArray(pairsRaw) ? pairsRaw : [];
+        const zoneDocs = Array.isArray(zonesRaw) ? zonesRaw : [];
+
+        const zoneMap: Record<string, string[]> = {};
+        pairs.forEach((zc) => {
+          const zone = (zc.zone || '').trim();
+          if (!zone) return;
+          if (!zoneMap[zone]) zoneMap[zone] = [];
+          const cl = (zc.cluster || '').trim();
+          if (cl && !zoneMap[zone].includes(cl)) zoneMap[zone].push(cl);
+        });
+
+        const zoneNamesFromApi = zoneDocs.map((z) => (z.name || '').trim()).filter(Boolean);
+        const allZones = [...new Set([...Object.keys(zoneMap), ...zoneNamesFromApi])].sort((a, b) =>
+          a.localeCompare(b),
+        );
+
+        setZones(allZones);
+        setClustersByZone(zoneMap);
+      } catch {
+        setZones([]);
+        setClustersByZone({});
+      }
+    };
+    loadZonesAndClusters();
   }, []);
+
+  const sanitizeDigits = (value: string, maxDigits = 10) =>
+    String(value || '').replace(/\D/g, '').slice(0, maxDigits);
 
   const clearMessages = () => {
     setSuccessMessage(null);
     setErrorMessage(null);
+  };
+
+  const handlePhoneChange = (value: string) => {
+    setForm((f) => ({ ...f, phone: sanitizeDigits(value, 10) }));
+  };
+
+  const handleMobileChange = (value: string) => {
+    setForm((f) => ({ ...f, mobile: sanitizeDigits(value, 10) }));
   };
 
   const handlePincodeChange = async (value: string) => {
@@ -66,7 +105,7 @@ export default function EmployeeNewScreen({ navigation }: any) {
         district: location.district || current.district,
         state: location.state || current.state,
         zone: location.zone || current.zone,
-        cluster: location.cluster || current.cluster,
+        cluster: location.cluster || (location.zone ? '' : current.cluster),
       }));
     } catch {
       // Keep the fields editable when this pincode has no configured mapping.
@@ -89,6 +128,17 @@ export default function EmployeeNewScreen({ navigation }: any) {
     }
     if (!form.mobile?.trim()) {
       setErrorMessage('Mobile is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+    if (!/^[6-9]\d{9}$/.test(form.mobile)) {
+      setErrorMessage('Enter a valid 10-digit mobile number.');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+    // Phone is optional, but if entered it must be exactly 10 digits
+    if (form.phone.trim() && form.phone.length !== 10) {
+      setErrorMessage('Phone must be a 10-digit number.');
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
@@ -122,6 +172,7 @@ export default function EmployeeNewScreen({ navigation }: any) {
     try {
       const payload: any = {
         ...form,
+        phone: form.phone.trim() || undefined,
         name: `${form.firstName} ${form.lastName}`.trim() || form.firstName || form.lastName || 'Executive',
       };
       if (!supportsEmployeeTagging(form.role)) {
@@ -172,8 +223,8 @@ export default function EmployeeNewScreen({ navigation }: any) {
         <FormField label="Last Name" value={form.lastName} onChangeText={(text: string) => setForm((f) => ({ ...f, lastName: text }))} placeholder="Last Name" />
         <FormField label="Emp ID / Code" value={form.empCode} onChangeText={(text: string) => setForm((f) => ({ ...f, empCode: text }))} placeholder="Employee ID / Code" />
         <FormField label="Email Id *" value={form.email} onChangeText={(text: string) => setForm((f) => ({ ...f, email: text }))} placeholder="Email" keyboardType="email-address" />
-        <FormField label="Phone" value={form.phone} onChangeText={(text: string) => setForm((f) => ({ ...f, phone: text }))} placeholder="Phone" keyboardType="phone-pad" />
-        <FormField label="Mobile *" value={form.mobile} onChangeText={(text: string) => setForm((f) => ({ ...f, mobile: text }))} placeholder="Mobile" keyboardType="phone-pad" />
+        <FormField label="Phone" value={form.phone} onChangeText={handlePhoneChange} placeholder="10-digit phone (optional)" keyboardType="phone-pad" maxLength={10} />
+        <FormField label="Mobile *" value={form.mobile} onChangeText={handleMobileChange} placeholder="10-digit mobile" keyboardType="phone-pad" maxLength={10} />
         <View style={styles.textAreaContainer}>
           <Text style={styles.label}>Address 1</Text>
           <WebInput style={styles.textArea} value={form.address1} onChangeText={(text: string) => setForm((f) => ({ ...f, address1: text }))} placeholder="Address 1" multiline numberOfLines={3} />
@@ -185,11 +236,29 @@ export default function EmployeeNewScreen({ navigation }: any) {
         <WebSelect
           label="Zone *"
           value={form.zone}
-          onValueChange={(zone) => setForm((f) => ({ ...f, zone }))}
-          placeholder="Select employee zone"
-          items={zones.map((zone) => ({ label: zone.name, value: zone.name }))}
+          onValueChange={(zone) => setForm((f) => ({ ...f, zone, cluster: '' }))}
+          placeholder="Select Zone"
+          items={zones.map((zone) => ({ label: zone, value: zone }))}
         />
-        <FormField label="Cluster *" value={form.cluster} onChangeText={(text: string) => setForm((f) => ({ ...f, cluster: text }))} placeholder="Enter Employee Cluster" />
+        <WebSelect
+          label="Cluster *"
+          value={form.cluster}
+          onValueChange={(cluster) => setForm((f) => ({ ...f, cluster }))}
+          placeholder={
+            !form.zone
+              ? 'Select zone first'
+              : clustersForZone.length === 0
+                ? 'No clusters linked to this zone'
+                : 'Select Employee Cluster'
+          }
+          disabled={!form.zone || clustersForZone.length === 0}
+          items={clustersForZone.map((cluster) => ({ label: cluster, value: cluster }))}
+        />
+        {form.zone && clustersForZone.length === 0 ? (
+          <Text style={styles.lookupText}>
+            No clusters linked to this zone. Add links under Employees → Zones.
+          </Text>
+        ) : null}
         <FormField label="District *" value={form.district} onChangeText={(text: string) => setForm((f) => ({ ...f, district: text }))} placeholder="Enter Employee District" />
         <FormField label="City *" value={form.city} onChangeText={(text: string) => setForm((f) => ({ ...f, city: text }))} placeholder="City" />
         <View style={styles.fieldContainer}>
@@ -230,11 +299,19 @@ export default function EmployeeNewScreen({ navigation }: any) {
   );
 }
 
-function FormField({ label, value, onChangeText, placeholder, keyboardType, secureTextEntry }: any) {
+function FormField({ label, value, onChangeText, placeholder, keyboardType, secureTextEntry, maxLength }: any) {
   return (
     <View style={styles.fieldContainer}>
       <Text style={styles.label}>{label}</Text>
-      <WebInput style={styles.input} value={value} onChangeText={onChangeText} placeholder={placeholder} keyboardType={keyboardType} secureTextEntry={secureTextEntry} />
+      <WebInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        keyboardType={keyboardType}
+        secureTextEntry={secureTextEntry}
+        maxLength={maxLength}
+      />
     </View>
   );
 }

@@ -1,37 +1,162 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, TextInput, RefreshControl, ActivityIndicator, Alert } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
-import ScreenShell, { PageSection } from '../../ui/ScreenShell';
-import { WebInput, WebButton, WebSelect, DataTable, WebLabel } from '../../ui/WebPrimitives';
+import ScreenShell from '../../ui/ScreenShell';
+import { WebInput, WebButton, WebSelect, WebLabel } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { downloadExpensesReport } from '../../utils/downloadExpensesReport';
 
-interface Expense {
+type Expense = {
   _id: string;
+  expItemId?: string;
   amount: number;
+  employeeAmount?: number;
   approvedAmount?: number;
-  category: string;
-  date: string;
+  category?: string;
+  date?: string;
+  createdAt?: string;
+  status?: string;
+  managerRemarks?: string;
+  employeeId?: { _id: string; name?: string; zone?: string };
+  trainerId?: { _id: string; name?: string; zone?: string };
+  managerApprovedBy?: { _id: string; name?: string };
+  approvedBy?: { _id: string; name?: string };
+};
+
+type Employee = {
+  _id: string;
+  name: string;
+  zone?: string;
+};
+
+type Filters = {
+  zone: string;
+  employeeId: string;
   status: string;
-  employeeId?: { name: string; zone?: string };
+  fromDate: string;
+  toDate: string;
+};
+
+const emptyFilters: Filters = {
+  zone: '',
+  employeeId: '',
+  status: '',
+  fromDate: '',
+  toDate: '',
+};
+
+function formatCreatedOn(dateString?: string) {
+  if (!dateString) return '-';
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return '-';
+  const day = date.getDate().toString().padStart(2, '0');
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
+  const hours = date.getHours();
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const seconds = date.getSeconds().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = (hours % 12 || 12).toString().padStart(2, '0');
+  return `${day}-${month}-${year} ${displayHours}:${minutes}:${seconds} ${ampm}`;
 }
 
-export default function ReportsExpensesScreen({ navigation }: any) {
+function formatExpDate(dateString?: string) {
+  if (!dateString) return '-';
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function getStatusDisplay(status?: string) {
+  if (status === 'Pending') return 'Pending at Manager';
+  if (status === 'Manager Approved') return 'Pending at Finance';
+  return status || '-';
+}
+
+function statusStyle(status?: string) {
+  switch (status) {
+    case 'Pending':
+      return { bg: '#FEF3C7', fg: '#B45309' };
+    case 'Manager Approved':
+      return { bg: '#DBEAFE', fg: '#1D4ED8' };
+    case 'Executive Manager Approved':
+      return { bg: '#FCE7F3', fg: '#BE185D' };
+    case 'Approved':
+      return { bg: '#DCFCE7', fg: '#15803D' };
+    case 'Rejected':
+      return { bg: '#FEE2E2', fg: '#B91C1C' };
+    default:
+      return { bg: '#F1F5F9', fg: '#64748B' };
+  }
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
+export default function ReportsExpensesScreen() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [zones, setZones] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [exporting, setExporting] = useState(false);
+  const [filters, setFilters] = useState<Filters>(emptyFilters);
 
-  useEffect(() => {
-    loadExpenses();
+  const loadMeta = useCallback(async () => {
+    try {
+      const [empData, allExpenses] = await Promise.all([
+        apiService.get('/employees?isActive=true').catch(() => []),
+        apiService.get('/expenses').catch(() => []),
+      ]);
+      const empList: Employee[] = Array.isArray(empData) ? empData : (empData as any)?.data || [];
+      const expList: Expense[] = Array.isArray(allExpenses)
+        ? allExpenses
+        : (allExpenses as any)?.data || [];
+      setEmployees(empList);
+
+      const uniqueZones = new Set<string>();
+      empList.forEach((emp) => {
+        if (emp.zone) uniqueZones.add(emp.zone);
+      });
+      expList.forEach((exp) => {
+        const zone = exp.employeeId?.zone || exp.trainerId?.zone;
+        if (zone) uniqueZones.add(zone);
+      });
+      setZones(Array.from(uniqueZones).sort());
+    } catch {
+      // optional meta
+    }
   }, []);
 
-  const loadExpenses = async () => {
+  const loadExpenses = useCallback(async (nextFilters: Filters = filters) => {
     try {
       setLoading(true);
-      const data = await apiService.get<Expense[]>('/expenses/report');
-      setExpenses(data || []);
+      const params = new URLSearchParams();
+      if (nextFilters.zone) params.append('zone', nextFilters.zone);
+      if (nextFilters.employeeId) params.append('employeeId', nextFilters.employeeId);
+      if (nextFilters.status) params.append('status', nextFilters.status);
+      if (nextFilters.fromDate) params.append('fromDate', nextFilters.fromDate);
+      if (nextFilters.toDate) params.append('toDate', nextFilters.toDate);
+      const qs = params.toString();
+      const data = await apiService.get(`/expenses/report${qs ? `?${qs}` : ''}`);
+      setExpenses(Array.isArray(data) ? data : (data as any)?.data || []);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load expenses');
       setExpenses([]);
@@ -39,96 +164,142 @@ export default function ReportsExpensesScreen({ navigation }: any) {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [filters]);
+
+  useEffect(() => {
+    loadMeta();
+    loadExpenses(emptyFilters);
+  }, [loadMeta]);
+
+  const onSearch = () => loadExpenses(filters);
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadExpenses();
+    loadMeta();
+    loadExpenses(filters);
   };
 
-  const summary = useMemo(() => {
-    const total = expenses.reduce((sum, item) => sum + (item.amount || 0), 0);
-    const approved = expenses.reduce((sum, item) => sum + (item.approvedAmount || 0), 0);
-    const pendingCount = expenses.filter((item) => item.status === 'Pending' || item.status === 'Manager Approved').length;
-    return { total, approved, count: expenses.length, pendingCount };
-  }, [expenses]);
-
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    return expenses.filter((exp) => {
-      const matchesStatus = statusFilter === 'all' || exp.status === statusFilter;
-      const matchesSearch =
-        !term ||
-        exp.category.toLowerCase().includes(term) ||
-        exp.employeeId?.name?.toLowerCase().includes(term) ||
-        exp.employeeId?.zone?.toLowerCase().includes(term);
-      return matchesStatus && matchesSearch;
-    });
-  }, [expenses, statusFilter, search]);
-
-  const statuses = ['all', 'Pending', 'Manager Approved', 'Approved', 'Rejected'];
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.zone) params.append('zone', filters.zone);
+      if (filters.employeeId) params.append('employeeId', filters.employeeId);
+      if (filters.status) params.append('status', filters.status);
+      if (filters.fromDate) params.append('fromDate', filters.fromDate);
+      if (filters.toDate) params.append('toDate', filters.toDate);
+      await downloadExpensesReport(params.toString());
+      Alert.alert('Success', 'Excel file downloaded successfully');
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to export expenses');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <ScreenShell
-      title="Expenses Report"
+      title="Expenses"
       loading={loading && !refreshing}
       refreshing={refreshing}
       onRefresh={onRefresh}
+      noScroll
+      headerRight={
+        <TouchableOpacity onPress={handleExport} disabled={exporting} style={styles.headerExport}>
+          <Ionicons name="download-outline" size={16} color={colors.primary} />
+          <Text style={styles.headerExportText}>{exporting ? '…' : 'Export'}</Text>
+        </TouchableOpacity>
+      }
     >
-<View style={styles.summaryRow}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Total Amount</Text>
-          <Text style={styles.summaryValue}>₹{summary.total.toFixed(2)}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Approved Amount</Text>
-          <Text style={[styles.summaryValue, { color: colors.success }]}>₹{summary.approved.toFixed(2)}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Pending</Text>
-          <Text style={[styles.summaryValue, { color: colors.warning }]}>{summary.pendingCount}</Text>
-        </View>
-      </View>
-      <View style={styles.filters}>
-        <WebInput
-          style={styles.searchInput}
-          placeholder="Search by employee, zone, or category" value={search}
-          onChangeText={setSearch}
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        <WebButton
+          title={exporting ? 'Exporting…' : 'Export to Excel'}
+          onPress={handleExport}
+          loading={exporting}
         />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
-          {statuses.map((status) => (
-            <TouchableOpacity
-              key={status}
-              style={[styles.filterChip, statusFilter === status && styles.filterChipActive]}
-              onPress={() => setStatusFilter(status)}
-            >
-              <Text style={[styles.filterChipText, statusFilter === status && styles.filterChipTextActive]}>
-                {status === 'all' ? 'All' : status}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-      <ScrollView style={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {filtered.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>💸</Text>
+
+        <View style={styles.filterCard}>
+          <WebLabel>Zone</WebLabel>
+          <WebSelect
+            placeholder="All Zones"
+            value={filters.zone}
+            onValueChange={(v) => setFilters((f) => ({ ...f, zone: v }))}
+            items={zones.map((z) => ({ label: z, value: z }))}
+          />
+          <WebLabel>Employee</WebLabel>
+          <WebSelect
+            placeholder="All Employees"
+            value={filters.employeeId}
+            onValueChange={(v) => setFilters((f) => ({ ...f, employeeId: v }))}
+            items={employees.map((e) => ({ label: e.name, value: e._id }))}
+          />
+          <WebLabel>Status</WebLabel>
+          <WebSelect
+            placeholder="All Status"
+            value={filters.status}
+            onValueChange={(v) => setFilters((f) => ({ ...f, status: v }))}
+            items={[
+              { label: 'Pending', value: 'Pending' },
+              { label: 'Manager Approved', value: 'Manager Approved' },
+              { label: 'Executive Manager Approved', value: 'Executive Manager Approved' },
+              { label: 'Approved', value: 'Approved' },
+              { label: 'Rejected', value: 'Rejected' },
+            ]}
+          />
+          <WebLabel>From Date</WebLabel>
+          <WebInput
+            value={filters.fromDate}
+            onChangeText={(v) => setFilters((f) => ({ ...f, fromDate: v }))}
+            placeholder="YYYY-MM-DD"
+          />
+          <WebLabel>To Date</WebLabel>
+          <WebInput
+            value={filters.toDate}
+            onChangeText={(v) => setFilters((f) => ({ ...f, toDate: v }))}
+            placeholder="YYYY-MM-DD"
+          />
+          <WebButton title="Search" onPress={onSearch} />
+        </View>
+
+        {expenses.length === 0 ? (
+          <View style={styles.emptyBox}>
             <Text style={styles.emptyText}>No expenses found</Text>
           </View>
         ) : (
-          filtered.map((exp) => (
-            <View key={exp._id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.expenseTitle}>{exp.category}</Text>
-                <Text style={styles.badge}>{exp.status === 'Pending' ? 'Pending at Manager' : exp.status}</Text>
+          expenses.map((expense, index) => {
+            const badge = statusStyle(expense.status);
+            const expNo = expense.expItemId || String(expense._id).slice(-5);
+            const employeeName =
+              expense.employeeId?.name || expense.trainerId?.name || '-';
+            const expenseAmount = Number(expense.employeeAmount ?? expense.amount ?? 0);
+            const approvedAmount = Number(expense.approvedAmount ?? 0);
+            return (
+              <View key={expense._id} style={styles.card}>
+                <View style={styles.cardTop}>
+                  <Text style={styles.expNo}>#{expNo}</Text>
+                  <View style={[styles.statusBadge, { backgroundColor: badge.bg }]}>
+                    <Text style={[styles.statusBadgeText, { color: badge.fg }]}>
+                      {getStatusDisplay(expense.status)}
+                    </Text>
+                  </View>
+                </View>
+                <InfoRow label="S.No" value={String(index + 1)} />
+                <InfoRow label="Created On" value={formatCreatedOn(expense.createdAt)} />
+                <InfoRow label="Exp Date" value={formatExpDate(expense.date)} />
+                <InfoRow label="Employee Name" value={employeeName} />
+                <InfoRow label="Approved Manager" value={expense.managerApprovedBy?.name || '-'} />
+                <InfoRow label="Approved Fin" value={expense.approvedBy?.name || '-'} />
+                <InfoRow label="Expense Amount" value={expenseAmount.toFixed(2)} />
+                <InfoRow label="Approved Amount" value={approvedAmount.toFixed(2)} />
+                <InfoRow label="Approved Remarks" value={expense.managerRemarks || '-'} />
               </View>
-              <Text style={styles.infoLine}>Amount: ₹{exp.amount?.toFixed(2) || '0.00'}</Text>
-              {exp.approvedAmount ? <Text style={styles.infoLine}>Approved: ₹{exp.approvedAmount.toFixed(2)}</Text> : null}
-              <Text style={styles.infoLine}>Employee: {exp.employeeId?.name || '-'}</Text>
-              <Text style={styles.infoLine}>Zone: {exp.employeeId?.zone || '-'}</Text>
-              <Text style={styles.infoLine}>Date: {new Date(exp.date).toLocaleDateString('en-IN')}</Text>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </ScreenShell>
@@ -136,35 +307,67 @@ export default function ReportsExpensesScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-  loadingText: { marginTop: 12, ...typography.body.medium, color: colors.textSecondary },
-  header: { paddingHorizontal: 20, paddingTop: 50, paddingBottom: 20, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
-  headerContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  backButton: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backIcon: { fontSize: 24, color: colors.textLight, fontWeight: 'bold' },
-  headerTitle: { ...typography.heading.h1, color: colors.textLight, flex: 1, textAlign: 'center' },
-  placeholder: { width: 40 },
-  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 10 },
-  summaryCard: { flex: 1, minWidth: 150, padding: 12, borderRadius: 12, backgroundColor: colors.backgroundLight, borderWidth: 1, borderColor: colors.border },
-  summaryLabel: { ...typography.label.medium, color: colors.textSecondary },
-  summaryValue: { ...typography.heading.h3, color: colors.textPrimary },
-  filters: { paddingHorizontal: 16, paddingBottom: 12 },
-  searchInput: { ...typography.body.medium, backgroundColor: colors.backgroundLight, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, color: colors.textPrimary },
-  filterScroll: { marginTop: 10 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
-  filterChipActive: { backgroundColor: colors.primary + '20', borderColor: colors.primary },
-  filterChipText: { ...typography.body.medium, color: colors.textPrimary },
-  filterChipTextActive: { color: colors.primary, fontWeight: '600' },
-  content: { flex: 1, paddingHorizontal: 16 },
-  emptyContainer: { alignItems: 'center', marginTop: 60 },
-  emptyIcon: { fontSize: 64, marginBottom: 12 },
-  emptyText: { ...typography.heading.h3, color: colors.textSecondary },
-  card: { backgroundColor: colors.backgroundLight, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  expenseTitle: { ...typography.heading.h3, color: colors.textPrimary, flex: 1 },
-  badge: { ...typography.label.small, color: colors.primary, borderWidth: 1, borderColor: colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  infoLine: { ...typography.body.medium, color: colors.textSecondary, marginTop: 4 },
+  content: { flex: 1 },
+  contentContainer: { padding: 16, paddingBottom: 32, gap: 12 },
+  headerExport: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  headerExportText: { color: colors.primary, fontWeight: '600', fontSize: 13 },
+  filterCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    gap: 6,
+  },
+  emptyBox: {
+    paddingVertical: 48,
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  emptyText: { ...typography.body.medium, color: colors.textSecondary },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  expNo: {
+    ...typography.heading.h3,
+    color: colors.textPrimary,
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+    gap: 8,
+  },
+  infoLabel: {
+    width: 130,
+    ...typography.body.small,
+    color: colors.textSecondary,
+  },
+  infoValue: {
+    flex: 1,
+    ...typography.body.medium,
+    color: colors.textPrimary,
+  },
 });
-
-

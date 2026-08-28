@@ -299,14 +299,55 @@ export default function LeadEditScreen({ navigation, route }: any) {
   const loadLead = async () => {
     try {
       setLoading(true);
-      let lead: any;
-      try {
-        lead = await apiService.get(`/dc-orders/${id}`);
-      } catch {
-        lead = await apiService.get(`/leads/${id}`);
+
+      const pickNum = (...vals: any[]) => {
+        for (const v of vals) {
+          if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+        }
+        return '';
+      };
+
+      const softGet = async (path: string) => {
+        try {
+          return await apiService.get(path);
+        } catch {
+          return null;
+        }
+      };
+
+      // Follow-up list mixes Lead + DcOrder ids — try both and merge fee/branches/strength.
+      const [fromOrder, fromLead] = await Promise.all([
+        softGet(`/dc-orders/${id}`),
+        softGet(`/leads/${id}`),
+      ]);
+      const lead: any = fromOrder || fromLead;
+      if (!lead) {
+        throw new Error('Failed to load lead');
       }
 
-      const followRaw = lead.follow_up_date || lead.estimated_delivery_date || '';
+      let school: any =
+        lead.school_id && typeof lead.school_id === 'object' ? lead.school_id : null;
+      const schoolIdRaw =
+        (fromLead?.school_id && typeof fromLead.school_id === 'object'
+          ? fromLead.school_id._id
+          : fromLead?.school_id) ||
+        (typeof lead.school_id === 'string' || typeof lead.school_id === 'number'
+          ? lead.school_id
+          : null);
+      if (
+        schoolIdRaw &&
+        (!school || school.average_fee == null || school.average_fee === '')
+      ) {
+        const linked = await softGet(`/dc-orders/${schoolIdRaw}`);
+        if (linked) school = { ...(school || {}), ...linked };
+      }
+
+      const followRaw =
+        lead.follow_up_date ||
+        fromOrder?.follow_up_date ||
+        fromLead?.follow_up_date ||
+        lead.estimated_delivery_date ||
+        '';
       let followStr = '';
       if (followRaw) {
         try {
@@ -317,30 +358,37 @@ export default function LeadEditScreen({ navigation, route }: any) {
       }
 
       setForm({
-        school_name: lead.school_name || '',
-        school_type: lead.school_type || 'New',
-        contact_person: lead.contact_person || '',
-        contact_mobile: lead.contact_mobile || '',
-        email: lead.email || '',
-        decision_maker_name: lead.decision_maker_name || lead.contact_person2 || '',
-        decision_maker_mobile: lead.decision_maker_mobile || lead.contact_mobile2 || '',
-        location: lead.location || '',
-        city: lead.city || '',
-        address: lead.address || '',
-        pincode: lead.pincode || '',
-        state: lead.state || '',
-        region: lead.region || '',
-        area: lead.area || '',
+        school_name: lead.school_name || school?.school_name || '',
+        school_type: lead.school_type || school?.school_type || 'New',
+        contact_person: lead.contact_person || school?.contact_person || '',
+        contact_mobile: lead.contact_mobile || school?.contact_mobile || '',
+        email: lead.email || school?.email || '',
+        decision_maker_name:
+          lead.decision_maker_name || lead.contact_person2 || school?.contact_person2 || '',
+        decision_maker_mobile:
+          lead.decision_maker_mobile || lead.contact_mobile2 || school?.contact_mobile2 || '',
+        location: lead.location || school?.location || '',
+        city: lead.city || school?.city || '',
+        address: lead.address || school?.address || '',
+        pincode: lead.pincode || school?.pincode || '',
+        state: lead.state || school?.state || '',
+        region: lead.region || school?.region || '',
+        area: lead.area || school?.area || '',
         priority: lead.priority || lead.lead_status || 'Hot',
-        zone: lead.zone || '',
-        branches: lead.branches != null ? String(lead.branches) : '',
-        strength: lead.strength != null ? String(lead.strength) : '',
-        remarks: lead.remarks || '',
-        average_fee: lead.average_fee != null ? String(lead.average_fee) : '',
+        zone: lead.zone || school?.zone || '',
+        branches: pickNum(fromOrder?.branches, fromLead?.branches, lead.branches, school?.branches),
+        strength: pickNum(fromOrder?.strength, fromLead?.strength, lead.strength, school?.strength),
+        remarks: lead.remarks || school?.remarks || '',
+        average_fee: pickNum(
+          fromOrder?.average_fee,
+          fromLead?.average_fee,
+          lead.average_fee,
+          school?.average_fee,
+        ),
         follow_up_date: followStr,
       });
 
-      setLeadProducts(mergeLeadProductDetails(lead));
+      setLeadProducts(mergeLeadProductDetails(fromOrder || fromLead || lead));
     } catch (error: any) {
       setErrorMessage(error.message || 'Failed to load lead');
     } finally {
@@ -381,6 +429,21 @@ export default function LeadEditScreen({ navigation, route }: any) {
     }
     if (!form.remarks?.trim()) {
       setErrorMessage('Remarks is required');
+      return;
+    }
+    if (!form.average_fee?.trim() || Number(form.average_fee) <= 0) {
+      setErrorMessage('Average School Fee is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+    if (!form.branches?.trim() || Number(form.branches) <= 0) {
+      setErrorMessage('No. of Branches is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+    if (!form.strength?.trim() || Number(form.strength) <= 0) {
+      setErrorMessage('School Strength is required');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
       return;
     }
 
@@ -637,21 +700,24 @@ export default function LeadEditScreen({ navigation, route }: any) {
         </View>
 
         <FormField
-          label="Average School Fee"
+          label="Average School Fee *"
           value={form.average_fee}
           onChangeText={(text) => setForm((f) => ({ ...f, average_fee: text }))}
+          placeholder="Enter average school fee"
           keyboardType="number-pad"
         />
         <FormField
-          label="No. of Branches"
+          label="No. of Branches *"
           value={form.branches}
           onChangeText={(text) => setForm((f) => ({ ...f, branches: text }))}
+          placeholder="Enter number of branches"
           keyboardType="number-pad"
         />
         <FormField
-          label="School Strength"
+          label="School Strength *"
           value={form.strength}
           onChangeText={(text) => setForm((f) => ({ ...f, strength: text }))}
+          placeholder="Enter total strength"
           keyboardType="number-pad"
         />
         <View style={styles.textAreaContainer}>

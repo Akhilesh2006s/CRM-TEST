@@ -494,6 +494,17 @@ export default function LeadCloseScreen({ navigation, route }: any) {
         term: p.term || 'Term 1',
         product: p.product,
       })),
+      (productName) => {
+        const product = products.find(
+          (p) =>
+            String(p.productName || p.name || p.product || '')
+              .trim()
+              .toLowerCase() === String(productName || '').trim().toLowerCase(),
+        );
+        return Array.isArray(product?.productLevels)
+          ? product.productLevels.map((l: any) => String(l).trim()).filter(Boolean)
+          : [];
+      },
     );
 
     const productsPayload = withTerms.map((p) => ({
@@ -684,7 +695,13 @@ export default function LeadCloseScreen({ navigation, route }: any) {
           )}
         </View>
 
-        <TouchableOpacity style={styles.addProductsButton} onPress={() => setShowProductModal(true)}>
+        <TouchableOpacity
+          style={styles.addProductsButton}
+          onPress={() => {
+            void loadProducts();
+            setShowProductModal(true);
+          }}
+        >
           <Text style={styles.addProductsButtonText}>
             📦 ADD PRODUCTS {actualProductDetails.length > 0 && `(${actualProductDetails.length})`}
           </Text>

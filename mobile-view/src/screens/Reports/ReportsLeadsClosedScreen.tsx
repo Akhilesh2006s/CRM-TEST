@@ -164,6 +164,11 @@ export default function ReportsLeadsClosedScreen({ navigation }: any) {
     if (schoolName) {
       filtered = filtered.filter((l) => l.school_name?.toLowerCase().includes(schoolName.toLowerCase()));
     }
+    filtered.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
     setLeads(filtered);
   };
 

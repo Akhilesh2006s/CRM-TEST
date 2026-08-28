@@ -15,6 +15,7 @@ import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
 import { WebSelect } from '../../ui/WebPrimitives';
 import { apiService } from '../../services/api';
+import { assignTermsByLevelCombination } from '../../utils/levelTermRouting';
 
 export type CloseLeadProductRow = {
   id: string;
@@ -227,44 +228,13 @@ function expandSectionsToRows(
       });
     });
   });
-  return assignTermsByLevelCombination(rows);
+  return assignTermsByLevelCombination(rows, (product) =>
+    getProductLevelsOptions(catalogProducts, product),
+  );
 }
 
 function productHasValidClasses(sp: SectionProduct) {
   return CLASS_NUMBERS.some((c) => classStrengthFor(sp, c) > 0);
-}
-
-function normalizeLevelKey(level: unknown): string {
-  return String(level ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, '');
-}
-
-function isLevelOne(level: unknown): boolean {
-  const k = normalizeLevelKey(level);
-  return k === 'level1' || k === 'l1' || k.startsWith('level1');
-}
-
-function isLevelTwo(level: unknown): boolean {
-  const k = normalizeLevelKey(level);
-  return k === 'level2' || k === 'l2' || k.startsWith('level2');
-}
-
-/**
- * Route by level for My Clients vs Term-Wise DC:
- * - Level 1 (and products with no level) → Term 1 (My Clients)
- * - Level 2 + Level 1 present → Term 2 (Term-Wise DC)
- * - Level 2 only (no Level 1 in the set) → Term 1 (My Clients)
- */
-function assignTermsByLevelCombination(rows: CloseLeadProductRow[]): CloseLeadProductRow[] {
-  const hasLevel1 = rows.some((r) => isLevelOne(r.level));
-  return rows.map((r) => {
-    if (isLevelTwo(r.level)) {
-      return { ...r, term: hasLevel1 ? 'Term 2' : 'Term 1' };
-    }
-    return { ...r, term: 'Term 1' };
-  });
 }
 
 type Props = {
@@ -294,6 +264,35 @@ export default function CloseLeadProductsModal({
       setSections([{ id: newSectionId(), products: [] }]);
     }
   }, [visible]);
+
+  // When catalog levels are renamed (e.g. Term 1 → hi), remapping selectedLevels keeps checkboxes in sync.
+  useEffect(() => {
+    if (!visible || !catalogProducts.length) return;
+    setSections((prev) =>
+      prev.map((sec) => ({
+        ...sec,
+        products: sec.products.map((sp) => {
+          const levels = getProductLevelsOptions(catalogProducts, sp.product);
+          if (levels.length === 0) return { ...sp, selectedLevels: [] };
+          const mapped = (sp.selectedLevels || [])
+            .map((sel, i) => {
+              if (levels.includes(sel)) return sel;
+              return levels[Math.min(i, levels.length - 1)] || levels[0];
+            })
+            .filter(Boolean);
+          const next =
+            mapped.length > 0 ? Array.from(new Set(mapped)) : [levels[0]];
+          if (
+            next.length === (sp.selectedLevels || []).length &&
+            next.every((v, i) => v === (sp.selectedLevels || [])[i])
+          ) {
+            return sp;
+          }
+          return { ...sp, selectedLevels: next };
+        }),
+      })),
+    );
+  }, [catalogProducts, visible]);
 
   const ensureDeliverablesLoaded = async (productName: string) => {
     if (deliverablesByProduct[productName] !== undefined) return;
